@@ -1,6 +1,6 @@
 import Store from 'electron-store';
 import type { Project, Job, OutputEntry, RawMessage, AppSettings } from '../shared/types';
-import { DEFAULT_SETTINGS } from '../shared/types';
+import { DEFAULT_SETTINGS, DEFAULT_SHORTCUTS } from '../shared/types';
 
 interface StoreSchema {
   projects: Project[];
@@ -233,7 +233,14 @@ markStaleJobs();
 export function getSettings(): AppSettings {
   const stored = store.get('settings');
   if (!stored) return DEFAULT_SETTINGS;
-  return { ...DEFAULT_SETTINGS, ...stored };
+  const merged = { ...DEFAULT_SETTINGS, ...stored };
+  // Ensure newly added default shortcuts appear for existing users
+  if (stored.shortcuts) {
+    const existingIds = new Set((stored.shortcuts as Array<{ id: string }>).map((s) => s.id));
+    const missing = DEFAULT_SHORTCUTS.filter((s) => !existingIds.has(s.id));
+    merged.shortcuts = [...(stored.shortcuts as typeof DEFAULT_SHORTCUTS), ...missing];
+  }
+  return merged;
 }
 
 export function updateSettings(partial: Partial<AppSettings>): AppSettings {

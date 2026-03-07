@@ -19,7 +19,7 @@ const api: ElectronAPI = {
 
   // Jobs
   jobsList: () => ipcRenderer.invoke('jobs:list'),
-  jobsCreate: (projectId, prompt, skipPlanning, images, branch) => ipcRenderer.invoke('jobs:create', projectId, prompt, skipPlanning, images, branch),
+  jobsCreate: (projectId, prompt, skipPlanning, images, branch, model, effort) => ipcRenderer.invoke('jobs:create', projectId, prompt, skipPlanning, images, branch, model, effort),
   saveImage: (dataBase64, filename, projectId) => ipcRenderer.invoke('images:save', dataBase64, filename, projectId),
   jobsCancel: (jobId) => ipcRenderer.invoke('jobs:cancel', jobId),
   jobsDelete: (jobId) => ipcRenderer.invoke('jobs:delete', jobId),

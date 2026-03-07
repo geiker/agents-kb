@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useKanbanStore } from '../hooks/useKanbanStore';
 import { useElectronAPI } from '../hooks/useElectronAPI';
 import { ClaudeMdEditor } from './ClaudeMdEditor';
-import { SettingsDialog } from './SettingsDialog';
+import { Kbd } from './Kbd';
 import type { KanbanColumn, Project } from '../types/index';
 
 interface BranchStatus {
@@ -297,8 +297,8 @@ export function ProjectManager() {
   const setProjectDefaultBranch = useKanbanStore((s) => s.setProjectDefaultBranch);
   const api = useElectronAPI();
 
+  const setShowSettings = useKanbanStore((s) => s.setShowSettings);
   const [detailProjectId, setDetailProjectId] = useState<string | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
   const [branchStatuses, setBranchStatuses] = useState<Map<string, BranchStatus[]>>(new Map());
   const [pushConfirm, setPushConfirm] = useState<{ projectId: string; branch: string } | null>(null);
   const [pushing, setPushing] = useState(false);
@@ -316,7 +316,7 @@ export function ProjectManager() {
     const fetchAll = async () => {
       const newMap = new Map<string, BranchStatus[]>();
       await Promise.all(
-        projects.map(async (p) => {
+        projects.filter((p) => p.isGitRepo !== false).map(async (p) => {
           const result = await api.gitBranchesStatus(p.id);
           if (result && result.length > 0) newMap.set(p.id, result);
         }),
@@ -711,12 +711,9 @@ export function ProjectManager() {
             <circle cx="8" cy="8" r="2.5" />
             <path d="M13.5 8a5.5 5.5 0 00-.08-.87l1.44-1.13a.34.34 0 00.08-.44l-1.37-2.36a.34.34 0 00-.42-.15l-1.7.68a5.3 5.3 0 00-1.5-.87L9.63 1.1a.34.34 0 00-.34-.28H6.56a.34.34 0 00-.34.28l-.25 1.8a5.3 5.3 0 00-1.5.87l-1.7-.68a.34.34 0 00-.42.15L.98 5.6a.34.34 0 00.08.44l1.44 1.13a5.5 5.5 0 000 1.74L1.06 10a.34.34 0 00-.08.44l1.37 2.36a.34.34 0 00.42.15l1.7-.68c.46.35.96.64 1.5.87l.25 1.8a.34.34 0 00.34.28h2.73a.34.34 0 00.34-.28l.25-1.8a5.3 5.3 0 001.5-.87l1.7.68a.34.34 0 00.42-.15l1.37-2.36a.34.34 0 00-.08-.44l-1.44-1.13c.05-.29.08-.58.08-.87z" />
           </svg>
-          <span className="text-[11px]">Settings</span>
+          <span className="text-[11px]">Settings<Kbd shortcutId="openSettings" /></span>
         </button>
       </div>
-
-      {/* Settings dialog */}
-      {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
 
       {/* Push confirmation dialog */}
       {pushConfirm && createPortal(

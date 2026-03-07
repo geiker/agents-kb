@@ -1,6 +1,6 @@
-export type { KanbanColumn, JobStatus, Project, OutputEntry, RawMessage, PendingQuestion, FollowUp, Job, GitSnapshot, ShortcutBinding, AppSettings, ThemeMode } from '../../shared/types';
-export { DEFAULT_SETTINGS, DEFAULT_SHORTCUTS, DEFAULT_COMMIT_PROMPT } from '../../shared/types';
-import type { Project, Job, OutputEntry, RawMessage, PendingQuestion, AppSettings } from '../../shared/types';
+export type { KanbanColumn, JobStatus, Project, OutputEntry, RawMessage, PendingQuestion, FollowUp, Job, GitSnapshot, ShortcutBinding, AppSettings, ThemeMode, ModelChoice, EffortLevel, ModelOption, EffortOption } from '../../shared/types';
+export { DEFAULT_SETTINGS, DEFAULT_SHORTCUTS, DEFAULT_COMMIT_PROMPT, MODEL_CATALOG, EFFORT_CATALOG } from '../../shared/types';
+import type { Project, Job, OutputEntry, RawMessage, PendingQuestion, AppSettings, ModelChoice, EffortLevel } from '../../shared/types';
 
 // IPC API exposed via preload
 export interface ElectronAPI {
@@ -21,7 +21,7 @@ export interface ElectronAPI {
 
   // Jobs
   jobsList: () => Promise<Job[]>;
-  jobsCreate: (projectId: string, prompt: string, skipPlanning?: boolean, images?: string[], branch?: string) => Promise<Job>;
+  jobsCreate: (projectId: string, prompt: string, skipPlanning?: boolean, images?: string[], branch?: string, model?: ModelChoice, effort?: EffortLevel) => Promise<Job>;
   saveImage: (dataBase64: string, filename: string, projectId: string) => Promise<string>;
   jobsCancel: (jobId: string) => Promise<void>;
   jobsDelete: (jobId: string) => Promise<void>;

@@ -5,6 +5,7 @@ import { KanbanBoard } from './components/KanbanBoard';
 import { ProjectManager } from './components/ProjectManager';
 import { JobDetailPanel } from './components/JobDetailPanel';
 import { NewJobDialog } from './components/NewJobDialog';
+import { SettingsDialog } from './components/SettingsDialog';
 import { Kbd } from './components/Kbd';
 
 function applyDarkClass(isDark: boolean) {
@@ -16,6 +17,8 @@ export default function App() {
   const selectedJobId = useKanbanStore((s) => s.selectedJobId);
   const showNewJobDialog = useKanbanStore((s) => s.showNewJobDialog);
   const setShowNewJobDialog = useKanbanStore((s) => s.setShowNewJobDialog);
+  const showSettings = useKanbanStore((s) => s.showSettings);
+  const setShowSettings = useKanbanStore((s) => s.setShowSettings);
   const projects = useKanbanStore((s) => s.projects);
   const theme = useKanbanStore((s) => s.settings.theme);
 
@@ -32,11 +35,14 @@ export default function App() {
     return api.onThemeChanged((actual) => applyDarkClass(actual === 'dark'));
   }, [theme]);
 
-  const openNewJob = useCallback(() => {
-    if (projects.length > 0) setShowNewJobDialog(true);
-  }, [projects.length, setShowNewJobDialog]);
+  const toggleNewJob = useCallback(() => {
+    if (projects.length > 0) setShowNewJobDialog(!showNewJobDialog);
+  }, [projects.length, setShowNewJobDialog, showNewJobDialog]);
 
-  useShortcut('newJob', openNewJob, { enabled: projects.length > 0 });
+  useShortcut('newJob', toggleNewJob, { enabled: projects.length > 0 });
+
+  const toggleSettings = useCallback(() => setShowSettings(!showSettings), [setShowSettings, showSettings]);
+  useShortcut('openSettings', toggleSettings);
 
   return (
     <div className="flex h-full">
@@ -69,8 +75,9 @@ export default function App() {
         </div>
       </div>
 
-      {/* Modal */}
+      {/* Modals */}
       {showNewJobDialog && <NewJobDialog />}
+      {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
     </div>
   );
 }

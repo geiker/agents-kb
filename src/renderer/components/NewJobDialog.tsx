@@ -3,6 +3,9 @@ import { useKanbanStore } from '../hooks/useKanbanStore';
 import { useElectronAPI } from '../hooks/useElectronAPI';
 import { useShortcut } from '../hooks/useShortcut';
 import { Kbd } from './Kbd';
+import { SegmentedPicker } from './SegmentedPicker';
+import { MODEL_CATALOG, EFFORT_CATALOG } from '../types/index';
+import type { ModelChoice, EffortLevel } from '../types/index';
 
 interface AttachedImage {
   name: string;
@@ -15,6 +18,7 @@ export function NewJobDialog() {
   const addJob = useKanbanStore((s) => s.addJob);
   const setShowNewJobDialog = useKanbanStore((s) => s.setShowNewJobDialog);
   const filteredProjectId = useKanbanStore((s) => s.selectedProjectId);
+  const settings = useKanbanStore((s) => s.settings);
   const api = useElectronAPI();
 
   const [selectedProjectId, setSelectedProjectId] = useState(filteredProjectId || projects[0]?.id || '');
@@ -26,9 +30,13 @@ export function NewJobDialog() {
   const [currentBranch, setCurrentBranch] = useState('');
   const [selectedBranch, setSelectedBranch] = useState('');
   const [loadingBranches, setLoadingBranches] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<ModelChoice>(settings.defaultModel);
+  const [selectedEffort, setSelectedEffort] = useState<EffortLevel>(settings.defaultEffort);
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const projectSelectRef = useRef<HTMLSelectElement>(null);
+  const branchSelectRef = useRef<HTMLSelectElement>(null);
 
   const togglePlan = useCallback(() => setSkipPlanning((v) => !v), []);
 
@@ -126,7 +134,9 @@ export function NewJobDialog() {
       }
 
       const branchToUse = branches.length > 0 ? selectedBranch : undefined;
-      const job = await api.jobsCreate(selectedProjectId, prompt.trim(), skipPlanning || undefined, imagePaths, branchToUse);
+      const modelToUse = selectedModel !== settings.defaultModel ? selectedModel : undefined;
+      const effortToUse = selectedEffort !== settings.defaultEffort ? selectedEffort : undefined;
+      const job = await api.jobsCreate(selectedProjectId, prompt.trim(), skipPlanning || undefined, imagePaths, branchToUse, modelToUse, effortToUse);
       addJob(job);
       setShowNewJobDialog(false);
     } catch (err) {
@@ -143,6 +153,16 @@ export function NewJobDialog() {
     enabled: !submitting && !!selectedProjectId && !!prompt.trim(),
   });
 
+  useShortcut('focusProject', useCallback(() => {
+    projectSelectRef.current?.focus();
+    projectSelectRef.current?.showPicker?.();
+  }, []), { ref: dialogRef, enabled: !filteredProjectId });
+
+  useShortcut('focusBranch', useCallback(() => {
+    branchSelectRef.current?.focus();
+    branchSelectRef.current?.showPicker?.();
+  }, []), { ref: dialogRef, enabled: branches.length > 0 });
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* Backdrop */}
@@ -157,8 +177,9 @@ export function NewJobDialog() {
 
         {/* Project selector */}
         <div className="mb-4">
-          <label className="block text-xs font-medium text-content-secondary uppercase tracking-wider mb-1.5">
+          <label className="flex items-center justify-between text-xs font-medium text-content-secondary uppercase tracking-wider mb-1.5">
             Project
+            {!filteredProjectId && <Kbd shortcutId="focusProject" />}
           </label>
           {filteredProjectId ? (
             <div className="w-full px-3 py-2 text-sm rounded-lg border border-chrome bg-surface-tertiary/50 text-content-primary">
@@ -167,6 +188,7 @@ export function NewJobDialog() {
           ) : (
             <div className="relative">
               <select
+                ref={projectSelectRef}
                 value={selectedProjectId}
                 onChange={(e) => setSelectedProjectId(e.target.value)}
                 className="w-full appearance-none px-3 pr-10 py-2 text-sm rounded-lg border border-chrome bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-focus-ring/40"
@@ -197,9 +219,11 @@ export function NewJobDialog() {
                   <path d="M12 7c0 3-2 4-6 6" />
                 </svg>
                 Branch
+                <span className="ml-auto"><Kbd shortcutId="focusBranch" /></span>
               </label>
               <div className="relative">
                 <select
+                  ref={branchSelectRef}
                   value={selectedBranch}
                   onChange={(e) => setSelectedBranch(e.target.value)}
                   disabled={loadingBranches}
@@ -330,6 +354,30 @@ export function NewJobDialog() {
             shift+tab
           </span>
         </div>
+
+        {/* Model & Effort */}
+        {settings.showModelEffortInNewJob && <div className="mb-6 space-y-3">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium text-content-secondary uppercase tracking-wider">
+              Model
+            </label>
+            <SegmentedPicker
+              options={MODEL_CATALOG}
+              value={selectedModel}
+              onChange={(v) => setSelectedModel(v as ModelChoice)}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium text-content-secondary uppercase tracking-wider">
+              Effort
+            </label>
+            <SegmentedPicker
+              options={EFFORT_CATALOG}
+              value={selectedEffort}
+              onChange={(v) => setSelectedEffort(v as EffortLevel)}
+            />
+          </div>
+        </div>}
 
         {/* Error */}
         {error && (

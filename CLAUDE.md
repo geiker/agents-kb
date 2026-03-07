@@ -25,9 +25,11 @@ pnpm run make    # build DMG/ZIP
 - **Styling**: Tailwind CSS 3 with CSS custom properties in `src/renderer/index.css` for light/dark theming. Semantic color tokens mapped in `tailwind.config.ts`
 - **Types**: Shared types in `src/shared/types.ts`, re-exported for renderer via `src/renderer/types/index.ts`
 
-# To remember:
+## To remember
+
 - build and use reusable components for the UI
 - use color theme colors, do not hardcode them. If you need another color, add it to the theme as well
+- always use frontend design skills when doing UI/UX tasks
 
 ## Maintenance
 

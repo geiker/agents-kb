@@ -3,8 +3,9 @@ import { createPortal } from 'react-dom';
 import { useKanbanStore } from '../hooks/useKanbanStore';
 import { useElectronAPI } from '../hooks/useElectronAPI';
 import { KbdRaw } from './Kbd';
+import { SegmentedPicker } from './SegmentedPicker';
 import type { AppSettings, ShortcutBinding, ThemeMode } from '../types/index';
-import { DEFAULT_SETTINGS, DEFAULT_COMMIT_PROMPT } from '../types/index';
+import { DEFAULT_SETTINGS, MODEL_CATALOG, EFFORT_CATALOG } from '../types/index';
 
 const isMac =
   typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -119,7 +120,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       {/* Dialog */}
       <div
         ref={dialogRef}
-        className="relative w-[400px] rounded-xl border border-chrome/50 bg-surface-elevated shadow-2xl shadow-surface-overlay/20 overflow-hidden animate-[dialogIn_150ms_ease-out] flex flex-col"
+        className="relative w-[520px] rounded-xl border border-chrome/50 bg-surface-elevated shadow-2xl shadow-surface-overlay/20 overflow-hidden animate-[dialogIn_150ms_ease-out] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -155,7 +156,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 Select light, dark, or match your system
               </div>
             </div>
-            <ThemePicker
+            <SegmentedPicker
+              options={THEME_OPTIONS}
               value={local.theme}
               onChange={(theme) => save({ ...local, theme })}
             />
@@ -163,14 +165,70 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
           <div className="border-t border-chrome-subtle/40" />
 
-          {/* Section header */}
+          {/* Claude section */}
+          <div>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-content-tertiary">
+              Claude
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-[13px] text-content-primary">Default Model</div>
+              <div className="text-[11px] text-content-tertiary mt-0.5">
+                Model for new jobs unless overridden
+              </div>
+            </div>
+            <SegmentedPicker
+              options={MODEL_CATALOG}
+              value={local.defaultModel}
+              onChange={(defaultModel) => save({ ...local, defaultModel })}
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-[13px] text-content-primary">Default Effort</div>
+              <div className="text-[11px] text-content-tertiary mt-0.5">
+                Effort level for new jobs unless overridden
+              </div>
+            </div>
+            <SegmentedPicker
+              options={EFFORT_CATALOG}
+              value={local.defaultEffort}
+              onChange={(defaultEffort) => save({ ...local, defaultEffort })}
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-[13px] text-content-primary">Always show model/effort</div>
+              <div className="text-[11px] text-content-tertiary mt-0.5">
+                Display badges on cards even when using defaults
+              </div>
+            </div>
+            <Toggle checked={local.alwaysShowModelEffort} onChange={() => save({ ...local, alwaysShowModelEffort: !local.alwaysShowModelEffort })} />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-[13px] text-content-primary">Show model/effort in New Job</div>
+              <div className="text-[11px] text-content-tertiary mt-0.5">
+                Display model and effort pickers when creating a job
+              </div>
+            </div>
+            <Toggle checked={local.showModelEffortInNewJob} onChange={() => save({ ...local, showModelEffortInNewJob: !local.showModelEffortInNewJob })} />
+          </div>
+
+          <div className="border-t border-chrome-subtle/40" />
+
+          {/* Keyboard Shortcuts */}
           <div>
             <span className="text-[10px] font-semibold uppercase tracking-wider text-content-tertiary">
               Keyboard Shortcuts
             </span>
           </div>
 
-          {/* Show hints toggle */}
           <div className="flex items-center justify-between">
             <div>
               <div className="text-[13px] text-content-primary">Show shortcut hints</div>
@@ -183,7 +241,6 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
           <div className="border-t border-chrome-subtle/40" />
 
-          {/* Shortcut list */}
           <div className="space-y-1">
             {local.shortcuts.map((shortcut) => (
               <ShortcutRow
@@ -262,7 +319,7 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void 
   );
 }
 
-/* ─── Theme Picker ─── */
+/* ─── Picker Options ─── */
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: 'system', label: 'System' },
@@ -270,31 +327,6 @@ const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: 'dark', label: 'Dark' },
 ];
 
-function ThemePicker({
-  value,
-  onChange,
-}: {
-  value: ThemeMode;
-  onChange: (theme: ThemeMode) => void;
-}) {
-  return (
-    <div className="flex shrink-0 rounded-lg border border-chrome/60 overflow-hidden">
-      {THEME_OPTIONS.map((opt) => (
-        <button
-          key={opt.value}
-          onClick={() => onChange(opt.value)}
-          className={`px-3.5 py-1 text-[12px] font-medium transition-colors ${
-            value === opt.value
-              ? 'bg-btn-primary text-content-inverted'
-              : 'bg-surface-tertiary/30 text-content-secondary hover:bg-surface-tertiary/60'
-          }`}
-        >
-          {opt.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 /* ─── Shortcut Row ─── */
 

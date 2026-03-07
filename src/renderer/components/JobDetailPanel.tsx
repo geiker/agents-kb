@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useMemo } from 'react';
 import { useKanbanStore } from '../hooks/useKanbanStore';
 import { useJobOutput } from '../hooks/useJobOutput';
 import { useElectronAPI } from '../hooks/useElectronAPI';
@@ -8,7 +8,8 @@ import { StreamingLog } from './StreamingLog';
 import { DiffViewer } from './DiffViewer';
 import { AcceptJobDialog } from './AcceptJobDialog';
 import { formatDuration, useNow } from '../utils/duration';
-import type { Job, FollowUp, GitSnapshot } from '../types/index';
+import type { Job, FollowUp, GitSnapshot, AppSettings, OutputEntry } from '../types/index';
+import { MODEL_CATALOG, EFFORT_CATALOG } from '../types/index';
 
 export function JobDetailPanel() {
   const selectedJobId = useKanbanStore((s) => s.selectedJobId);
@@ -28,12 +29,21 @@ export function JobDetailPanel() {
 
   const job = jobs.find((j) => j.id === selectedJobId);
   const outputLog = useJobOutput(selectedJobId || '');
+  const liveEditedFiles = useMemo(() => extractEditedFiles(outputLog), [outputLog]);
+  // Use persisted editedFiles (survives restart), fall back to live extraction from output log
+  const editedFiles = useMemo(() => {
+    if (job?.editedFiles && job.editedFiles.length > 0) {
+      return job.editedFiles.map((p) => ({ path: p, tool: 'Edit' }));
+    }
+    return liveEditedFiles;
+  }, [job?.editedFiles, liveEditedFiles]);
   const isActive = job?.status === 'running' || job?.status === 'waiting-input';
   const now = useNow(isActive ? 1000 : 0);
 
   if (!job) return null;
 
   const project = projects.find((p) => p.id === job.projectId);
+  const settings = useKanbanStore((s) => s.settings);
 
   const handleRespond = async () => {
     const isMulti = job?.pendingQuestion?.multiSelect;
@@ -131,10 +141,11 @@ export function JobDetailPanel() {
                 <span className="truncate">{job.branch}</span>
               </span>
             )}
+            <ModelEffortBadges job={job} settings={settings} />
           </div>
           <div className="flex items-center gap-0.5 shrink-0">
-          {/* Accept — for completed jobs */}
-          {job.status === 'completed' && (
+          {/* Accept — for completed jobs on git repos */}
+          {job.status === 'completed' && project?.isGitRepo !== false && (
             <button
               onClick={handleAcceptJob}
               className="p-1.5 text-semantic-success/70 hover:text-semantic-success hover:bg-semantic-success/10 transition-colors rounded"
@@ -270,6 +281,7 @@ export function JobDetailPanel() {
           {/* Tab content */}
           {doneTab === 'summary' && hasSummary && (
             <div className="flex-1 min-h-0 overflow-y-auto p-3">
+              <EditedFilesList files={editedFiles} />
               <PlanView content={job.summaryText!} />
             </div>
           )}
@@ -286,9 +298,10 @@ export function JobDetailPanel() {
         </div>
       )}
 
-      {/* Done state without summary or diff — just show log */}
+      {/* Done state without summary or diff — show edited files + log */}
       {isDone && !hasSummary && !hasDiff && (
         <div className="flex-1 min-h-0 p-3 flex flex-col">
+          <EditedFilesList files={editedFiles} />
           <StreamingLog entries={outputLog} />
         </div>
       )}
@@ -764,5 +777,133 @@ function PromptTimeline({
         );
       })}
     </div>
+  );
+}
+
+/* ─── Edited Files ─── */
+
+interface EditedFile {
+  path: string;
+  tool: string; // 'Write' | 'Edit' | etc.
+}
+
+const FILE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
+
+function extractEditedFiles(entries: OutputEntry[]): EditedFile[] {
+  const seen = new Map<string, string>(); // path -> tool
+  let currentTool = '';
+  let toolBuffer = '';
+
+  const flush = () => {
+    if (FILE_TOOLS.has(currentTool) && toolBuffer) {
+      try {
+        const parsed = JSON.parse(toolBuffer);
+        const filePath = (parsed.file_path || parsed.notebook_path) as string | undefined;
+        if (filePath && !seen.has(filePath)) {
+          seen.set(filePath, currentTool);
+        }
+      } catch { /* incomplete JSON */ }
+    }
+    currentTool = '';
+    toolBuffer = '';
+  };
+
+  for (const entry of entries) {
+    if (entry.type === 'tool-use') {
+      if (entry.toolName && entry.content === '') {
+        // New tool block start — flush previous
+        flush();
+        currentTool = entry.toolName;
+      } else if (entry.toolName && entry.content) {
+        // Full tool-use entry (old format)
+        flush();
+        currentTool = entry.toolName;
+        toolBuffer = entry.content;
+        flush();
+      } else {
+        // Delta — append
+        toolBuffer += entry.content;
+      }
+    } else {
+      flush();
+    }
+  }
+  flush();
+
+  return Array.from(seen.entries()).map(([path, tool]) => ({ path, tool }));
+}
+
+function EditedFilesList({ files }: { files: EditedFile[] }) {
+  if (files.length === 0) return null;
+
+  return (
+    <div className="mb-3">
+      <div className="text-[10px] font-semibold text-content-tertiary uppercase tracking-wider mb-1.5">
+        {files.length} file{files.length !== 1 ? 's' : ''} touched
+      </div>
+      <div className="space-y-px">
+        {files.map((file) => {
+          const parts = file.path.split('/');
+          const fileName = parts.pop() || file.path;
+          const dirPath = parts.length > 0 ? parts.join('/') + '/' : '';
+          // Shorten long dir paths to last 3 segments
+          const shortDir = parts.length > 3
+            ? '.../' + parts.slice(-3).join('/') + '/'
+            : dirPath;
+
+          return (
+            <div
+              key={file.path}
+              className="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-tertiary/40 transition-colors group"
+            >
+              {/* File icon */}
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-content-tertiary">
+                <path d="M9 2H4a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1V6L9 2z" />
+                <path d="M9 2v4h4" />
+              </svg>
+              {/* Path */}
+              <span className="text-[11px] font-mono truncate min-w-0">
+                <span className="text-content-tertiary">{shortDir}</span>
+                <span className="text-content-primary font-medium">{fileName}</span>
+              </span>
+              {/* Tool badge */}
+              <span className="shrink-0 text-[9px] font-medium text-content-tertiary/60 uppercase tracking-wider opacity-0 group-hover:opacity-100 transition-opacity">
+                {file.tool === 'Write' ? 'new' : 'edit'}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Model/Effort Badges ─── */
+
+function ModelEffortBadges({ job, settings }: { job: Job; settings: AppSettings }) {
+  const effectiveModel = job.model || settings.defaultModel;
+  const effectiveEffort = job.effort || settings.defaultEffort;
+  const isNonDefault = effectiveModel !== settings.defaultModel || effectiveEffort !== settings.defaultEffort;
+  if (!isNonDefault) return null;
+
+  const modelEntry = MODEL_CATALOG.find((o) => o.value === effectiveModel);
+  const effortEntry = EFFORT_CATALOG.find((o) => o.value === effectiveEffort);
+  const modelLabel = modelEntry?.label && effectiveModel !== 'default' ? modelEntry.label : '';
+  const effortLabel = effortEntry?.label && effectiveEffort !== settings.defaultEffort ? `${effortEntry.label} effort` : '';
+  if (!modelLabel && !effortLabel) return null;
+
+  return (
+    <>
+      {modelLabel && (
+        <span className="text-[10px] font-medium text-content-tertiary bg-surface-tertiary/60 rounded px-1.5 py-0.5">
+          {modelLabel}
+        </span>
+      )}
+      {effortLabel && (
+        <span className="text-[10px] font-medium text-content-tertiary bg-surface-tertiary/60 rounded px-1.5 py-0.5">
+          {effortLabel}
+        </span>
+      )}
+    </>
   );
 }

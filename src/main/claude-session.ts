@@ -12,6 +12,8 @@ export interface ClaudeSessionOptions {
   phase: SessionPhase;
   sessionId?: string; // for resuming
   images?: string[];
+  model?: string;
+  effort?: string;
 }
 
 export class ClaudeSession extends EventEmitter {
@@ -45,8 +47,15 @@ export class ClaudeSession extends EventEmitter {
       '--output-format', 'stream-json',
       '--verbose',
       '--include-partial-messages',
-      '--effort', 'high',
     ];
+
+    if (this.options.effort && this.options.effort !== 'default') {
+      args.push('--effort', this.options.effort);
+    }
+
+    if (this.options.model && this.options.model !== 'default') {
+      args.push('--model', this.options.model);
+    }
 
     if (this.options.phase === 'plan') {
       args.push('--permission-mode', 'plan');

@@ -24,10 +24,56 @@ import {
 } from './store';
 import { sessionManager } from './session-manager';
 import { notifyInputNeeded, notifyPlanReady, notifyJobComplete, notifyJobError } from './notifications';
-import { captureSnapshot, restoreSnapshot, cleanupSnapshot, cleanupAllSnapshots, getDiff, listBranches, checkoutBranch, gitStageAll, gitCommit, getBranchesStatus, gitPush } from './git-snapshot';
-import type { Job, OutputEntry, RawMessage, PendingQuestion, AppSettings } from '../shared/types';
+import { isGitRepoRoot, captureSnapshot, restoreSnapshot, cleanupSnapshot, cleanupAllSnapshots, getDiff, listBranches, checkoutBranch, gitStageAll, gitCommit, getBranchesStatus, gitPush } from './git-snapshot';
+import type { Job, OutputEntry, RawMessage, PendingQuestion, AppSettings, Project, ModelChoice, EffortLevel } from '../shared/types';
+import { COMMIT_PROMPT_SUFFIX } from '../shared/types';
 
 type WindowGetter = () => BrowserWindow | null;
+
+/** Extract file paths touched by Write/Edit tools from the output log */
+function extractEditedFilePaths(entries: OutputEntry[]): string[] {
+  const FILE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
+  const seen = new Set<string>();
+  let currentTool = '';
+  let toolBuffer = '';
+
+  const flush = () => {
+    if (FILE_TOOLS.has(currentTool) && toolBuffer) {
+      try {
+        const parsed = JSON.parse(toolBuffer);
+        const filePath = (parsed.file_path || parsed.notebook_path) as string | undefined;
+        if (filePath) seen.add(filePath);
+      } catch { /* incomplete JSON */ }
+    }
+    currentTool = '';
+    toolBuffer = '';
+  };
+
+  for (const entry of entries) {
+    if (entry.type === 'tool-use') {
+      if (entry.toolName && entry.content === '') {
+        flush();
+        currentTool = entry.toolName;
+      } else if (entry.toolName && entry.content) {
+        flush();
+        currentTool = entry.toolName;
+        toolBuffer = entry.content;
+        flush();
+      } else {
+        toolBuffer += entry.content;
+      }
+    } else {
+      flush();
+    }
+  }
+  flush();
+
+  return Array.from(seen);
+}
+
+function projectIsGitRepo(p: Project): boolean {
+  return p.isGitRepo !== false;
+}
 
 function sendToRenderer(getWindow: WindowGetter, channel: string, data: unknown) {
   const win = getWindow();
@@ -103,7 +149,7 @@ async function generateAndCacheBranchCommitMessage(projectId: string, branch: st
   if (!project) return;
   try {
     const settings = getSettings();
-    const prompt = settings.commitPrompt || 'Generate a concise conventional commit message for the current uncommitted changes. Output ONLY the commit message, nothing else.';
+    const prompt = (settings.commitPrompt || 'Generate a concise conventional commit message for the current uncommitted changes.') + COMMIT_PROMPT_SUFFIX;
     const message = await runClaudePrint(project.path, prompt);
     if (message) {
       commitMessageCache.set(`${projectId}:${branch}`, message);
@@ -117,8 +163,8 @@ async function startClaudeSession(job: Job, getWindow: WindowGetter, batchedSend
   const project = getProjects().find(p => p.id === job.projectId);
   if (!project) throw new Error('Project not found');
 
-  // Check out the target branch if specified
-  if (job.branch) {
+  // Check out the target branch if specified (git repos only)
+  if (job.branch && projectIsGitRepo(project)) {
     const branchInfo = await listBranches(project.path);
     if (branchInfo && branchInfo.current !== job.branch) {
       await checkoutBranch(project.path, job.branch);
@@ -143,6 +189,11 @@ async function startClaudeSession(job: Job, getWindow: WindowGetter, batchedSend
     prompt = job.prompt;
   }
 
+  // Resolve effective model and effort: job overrides > settings defaults
+  const settings = getSettings();
+  const effectiveModel = job.model || settings.defaultModel;
+  const effectiveEffort = job.effort || settings.defaultEffort;
+
   const session = sessionManager.create({
     jobId: job.id,
     projectPath: project.path,
@@ -150,6 +201,8 @@ async function startClaudeSession(job: Job, getWindow: WindowGetter, batchedSend
     phase,
     sessionId,
     images: job.images,
+    model: effectiveModel !== 'default' ? effectiveModel : undefined,
+    effort: effectiveEffort !== 'default' ? effectiveEffort : undefined,
   });
 
   session.on('session-id', (sid: string) => {
@@ -236,28 +289,34 @@ async function startClaudeSession(job: Job, getWindow: WindowGetter, batchedSend
     }
 
     if (phase === 'dev') {
+      // Extract edited files from output log before completion
+      const outputLog = getOutputLog(job.id);
+      const editedFiles = extractEditedFilePaths(outputLog);
+
       const updated = updateJob(job.id, {
         column: 'done',
         status: 'completed',
         pendingQuestion: undefined,
         completedAt: new Date().toISOString(),
         generatedCommitMessage: undefined,
+        editedFiles: editedFiles.length > 0 ? editedFiles : undefined,
       });
       if (updated) {
         sendToRenderer(getWindow, 'job:status-changed', updated);
         sendToRenderer(getWindow, 'job:complete', { jobId: job.id });
         notifyJobComplete(job.id, getWindow);
 
-        // Generate commit message in the background (per-job + per-branch cache)
-        generateCommitMessageInBackground(job.id, getWindow);
+        // Generate commit message in the background (git repos only)
+        const completedProject = getProjects().find(p => p.id === job.projectId);
+        if (completedProject && projectIsGitRepo(completedProject)) {
+          generateCommitMessageInBackground(job.id, getWindow);
 
-        // Pre-generate branch commit message
-        (async () => {
-          const project = getProjects().find(p => p.id === job.projectId);
-          if (!project) return;
-          const branch = job.branch || (await listBranches(project.path))?.current;
-          if (branch) generateAndCacheBranchCommitMessage(job.projectId, branch);
-        })();
+          // Pre-generate branch commit message
+          (async () => {
+            const branch = job.branch || (await listBranches(completedProject.path))?.current;
+            if (branch) generateAndCacheBranchCommitMessage(job.projectId, branch);
+          })();
+        }
       }
     } else {
       if (current.status === 'running') {
@@ -326,7 +385,7 @@ async function generateCommitMessageInBackground(jobId: string, getWindow: Windo
     if (!project) return;
 
     const settings = getSettings();
-    const prompt = settings.commitPrompt || 'Generate a concise conventional commit message for the current uncommitted changes. Output ONLY the commit message, nothing else.';
+    const prompt = (settings.commitPrompt || 'Generate a concise conventional commit message for the current uncommitted changes.') + COMMIT_PROMPT_SUFFIX;
     const message = await runClaudePrint(project.path, prompt);
     if (!message) return;
 
@@ -364,11 +423,13 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     if (result.canceled || result.filePaths.length === 0) return null;
 
     const folderPath = result.filePaths[0];
+    const isGitRepo = await isGitRepoRoot(folderPath);
     const project = {
       id: uuidv4(),
       name: path.basename(folderPath),
       path: folderPath,
       addedAt: new Date().toISOString(),
+      isGitRepo,
     };
 
     addProject(project);
@@ -440,7 +501,7 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     const project = getProjects().find(p => p.id === projectId);
     if (!project) throw new Error('Project not found');
     const settings = getSettings();
-    const prompt = settings.commitPrompt || 'Generate a concise conventional commit message for the current uncommitted changes. Output ONLY the commit message, nothing else.';
+    const prompt = (settings.commitPrompt || 'Generate a concise conventional commit message for the current uncommitted changes.') + COMMIT_PROMPT_SUFFIX;
     return runClaudePrint(project.path, prompt);
   });
 
@@ -449,7 +510,7 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     return getJobs();
   });
 
-  ipcMain.handle('jobs:create', async (_event, projectId: string, prompt: string, skipPlanning?: boolean, images?: string[], branch?: string) => {
+  ipcMain.handle('jobs:create', async (_event, projectId: string, prompt: string, skipPlanning?: boolean, images?: string[], branch?: string, model?: ModelChoice, effort?: EffortLevel) => {
     const now = new Date().toISOString();
     const job: Job = {
       id: uuidv4(),
@@ -463,14 +524,16 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
         : { planningStartedAt: now }),
       ...(images && images.length > 0 ? { images } : {}),
       ...(branch ? { branch } : {}),
+      ...(model && model !== 'default' ? { model } : {}),
+      ...(effort && effort !== 'default' ? { effort } : {}),
       outputLog: [],
       rawMessages: [],
     };
 
-    // Capture git snapshot before dev phase (skip-planning jobs go straight to dev)
+    // Capture git snapshot before dev phase (skip-planning jobs go straight to dev, git repos only)
     if (skipPlanning) {
       const project = getProjects().find(p => p.id === projectId);
-      if (project) {
+      if (project && projectIsGitRepo(project)) {
         const snapshot = await captureSnapshot(project.path, job.id, 0, 'Original');
         if (snapshot) job.gitSnapshots = [snapshot];
       }
@@ -628,10 +691,10 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     const followUps = [...(job.followUps || []), { prompt, timestamp: now }];
     const followUpIndex = followUps.length;
 
-    // Capture snapshot before this follow-up
+    // Capture snapshot before this follow-up (git repos only)
     const snapshots = [...(job.gitSnapshots || [])];
     const project = getProjects().find(p => p.id === job.projectId);
-    if (project) {
+    if (project && projectIsGitRepo(project)) {
       const label = followUpIndex === 1
         ? 'After initial development'
         : `After follow-up #${followUpIndex - 1}`;
@@ -722,10 +785,10 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
 
     const now = new Date().toISOString();
 
-    // Capture git snapshot before development starts
+    // Capture git snapshot before development starts (git repos only)
     const project = getProjects().find(p => p.id === job.projectId);
     const snapshots = [...(job.gitSnapshots || [])];
-    if (snapshots.length === 0 && project) {
+    if (snapshots.length === 0 && project && projectIsGitRepo(project)) {
       const snapshot = await captureSnapshot(project.path, jobId, 0, 'Original');
       if (snapshot) snapshots.push(snapshot);
     }
@@ -814,7 +877,7 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     if (!project) throw new Error('Project not found');
 
     const settings = getSettings();
-    const prompt = settings.commitPrompt || 'Generate a concise conventional commit message for the current uncommitted changes. Output ONLY the commit message, nothing else.';
+    const prompt = (settings.commitPrompt || 'Generate a concise conventional commit message for the current uncommitted changes.') + COMMIT_PROMPT_SUFFIX;
     return runClaudePrint(project.path, prompt);
   });
 
@@ -847,7 +910,18 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     if (job.status !== 'completed') throw new Error('Job is not completed');
 
     const snapshots = job.gitSnapshots || [];
-    if (snapshots.length === 0) throw new Error('No git snapshots available for rollback');
+
+    // Non-git projects (no snapshots): just mark as rejected without rollback
+    if (snapshots.length === 0) {
+      const updated = updateJob(jobId, {
+        status: 'rejected',
+        rejectedAt: new Date().toISOString(),
+      });
+      if (updated) {
+        sendToRenderer(getWindow, 'job:status-changed', updated);
+      }
+      return;
+    }
 
     // Default to first snapshot (original state) if no index specified
     const targetIndex = snapshotIndex ?? 0;

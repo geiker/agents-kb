@@ -8,6 +8,7 @@ interface KanbanState {
   selectedJobId: string | null;
   selectedProjectId: string | null;
   showNewJobDialog: boolean;
+  showSettings: boolean;
   settings: AppSettings;
 
   // Separate streaming data — not on jobs array
@@ -33,6 +34,7 @@ interface KanbanState {
   selectJob: (id: string | null) => void;
   selectProject: (id: string | null) => void;
   setShowNewJobDialog: (show: boolean) => void;
+  setShowSettings: (show: boolean) => void;
   setSettings: (settings: AppSettings) => void;
 
   // Initialization
@@ -45,6 +47,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   selectedJobId: null,
   selectedProjectId: null,
   showNewJobDialog: false,
+  showSettings: false,
   settings: DEFAULT_SETTINGS,
   outputLogs: {},
   rawMessages: {},
@@ -131,6 +134,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   selectJob: (id) => set({ selectedJobId: id }),
   selectProject: (id) => set((s) => ({ selectedProjectId: s.selectedProjectId === id ? null : id })),
   setShowNewJobDialog: (show) => set({ showNewJobDialog: show }),
+  setShowSettings: (show) => set({ showSettings: show }),
   setSettings: (settings) => set({ settings }),
 
   init: async () => {

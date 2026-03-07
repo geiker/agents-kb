@@ -3,6 +3,7 @@ import { useKanbanStore } from '../hooks/useKanbanStore';
 import { NotificationBadge } from './NotificationBadge';
 import { formatDuration, useNow } from '../utils/duration';
 import type { Job, KanbanColumn, JobStatus, FollowUp } from '../types/index';
+import { MODEL_CATALOG, EFFORT_CATALOG } from '../types/index';
 
 interface JobCardProps {
   job: Job;
@@ -155,7 +156,12 @@ function getEffectivePausedMs(job: Job, now: number): number {
   return paused;
 }
 
+function getBadge(catalog: { value: string; badge: string }[], value: string): string {
+  return catalog.find((o) => o.value === value)?.badge || '';
+}
+
 function PhaseDurations({ job, now }: { job: Job; now: number }) {
+  const settings = useKanbanStore((s) => s.settings);
   const pausedMs = getEffectivePausedMs(job, now);
   const phases: { label: string; value: string; dotColor: string; active: boolean }[] = [];
 
@@ -187,7 +193,16 @@ function PhaseDurations({ job, now }: { job: Job; now: number }) {
     }
   }
 
-  if (phases.length === 0) return null;
+  // Determine model/effort badges
+  const effectiveModel = job.model || settings.defaultModel;
+  const effectiveEffort = job.effort || settings.defaultEffort;
+  const showBadges = settings.alwaysShowModelEffort
+    || effectiveModel !== settings.defaultModel
+    || effectiveEffort !== settings.defaultEffort;
+  const modelLabel = getBadge(MODEL_CATALOG, effectiveModel);
+  const effortLabel = getBadge(EFFORT_CATALOG, effectiveEffort);
+
+  if (phases.length === 0 && !showBadges) return null;
 
   return (
     <div className="flex items-center gap-3 mt-2 pt-1.5 border-t border-chrome-subtle/40">
@@ -207,6 +222,20 @@ function PhaseDurations({ job, now }: { job: Job; now: number }) {
           </span>
         </div>
       ))}
+      {showBadges && (modelLabel || effortLabel) && (
+        <div className="flex items-center gap-1.5 ml-auto">
+          {modelLabel && (
+            <span className="text-[9px] font-bold tracking-[0.1em] text-content-tertiary uppercase bg-surface-tertiary/60 rounded px-1 py-px">
+              {modelLabel}
+            </span>
+          )}
+          {effortLabel && (
+            <span className="text-[9px] font-bold tracking-[0.1em] text-content-tertiary uppercase bg-surface-tertiary/60 rounded px-1 py-px">
+              {effortLabel}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
