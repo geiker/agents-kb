@@ -75,8 +75,7 @@
     --color-tool-label: 168 162 158;
   }
 
-  @media (prefers-color-scheme: dark) {
-    :root {
+  .dark {
       /* Surface */
       --color-bg-primary: 12 10 9;
       --color-bg-secondary: 28 25 23;
@@ -146,7 +145,6 @@
       /* Tool section icons */
       --color-tool-icon: 168 162 158;
       --color-tool-label: 120 113 108;
-    }
   }
 
   * {

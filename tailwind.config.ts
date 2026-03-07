@@ -5,6 +5,7 @@ function cssVar(name: string) {
 }
 
 const config: Config = {
+  darkMode: 'class',
   content: ['./index.html', './src/renderer/**/*.{html,tsx,ts}'],
   theme: {
     extend: {

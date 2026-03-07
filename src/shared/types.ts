@@ -1,5 +1,7 @@
 /* ─── Settings ─── */
 
+export type ThemeMode = 'system' | 'light' | 'dark';
+
 export interface ShortcutBinding {
   id: string;
   label: string;
@@ -8,6 +10,7 @@ export interface ShortcutBinding {
 }
 
 export interface AppSettings {
+  theme: ThemeMode;
   showShortcutHints: boolean;
   shortcuts: ShortcutBinding[];
   commitPrompt: string;
@@ -21,6 +24,7 @@ export const DEFAULT_SHORTCUTS: ShortcutBinding[] = [
 export const DEFAULT_COMMIT_PROMPT = 'Generate a concise conventional commit message for the current uncommitted changes. Output ONLY the commit message, nothing else.';
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  theme: 'system',
   showShortcutHints: false,
   shortcuts: [...DEFAULT_SHORTCUTS],
   commitPrompt: DEFAULT_COMMIT_PROMPT,

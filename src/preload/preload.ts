@@ -14,6 +14,8 @@ const api: ElectronAPI = {
   gitListBranches: (projectId) => ipcRenderer.invoke('git:list-branches', projectId),
   gitBranchesStatus: (projectId) => ipcRenderer.invoke('git:branches-status', projectId),
   gitPush: (projectId, branch) => ipcRenderer.invoke('git:push', projectId, branch),
+  gitCommit: (projectId, message, branch) => ipcRenderer.invoke('git:commit', projectId, message, branch),
+  gitGenerateCommitMessage: (projectId, branch) => ipcRenderer.invoke('git:generate-commit-message', projectId, branch),
 
   // Jobs
   jobsList: () => ipcRenderer.invoke('jobs:list'),
@@ -34,6 +36,14 @@ const api: ElectronAPI = {
   // Settings
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsUpdate: (partial) => ipcRenderer.invoke('settings:update', partial),
+
+  // Theme
+  themeGetActual: () => ipcRenderer.invoke('theme:get-actual'),
+  onThemeChanged: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, actual: 'light' | 'dark') => callback(actual);
+    ipcRenderer.on('theme:changed', handler);
+    return () => ipcRenderer.removeListener('theme:changed', handler);
+  },
 
   // CLAUDE.md
   claudeMdRead: (projectId) => ipcRenderer.invoke('claudemd:read', projectId),

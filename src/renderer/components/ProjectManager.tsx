@@ -303,6 +303,12 @@ export function ProjectManager() {
   const [pushConfirm, setPushConfirm] = useState<{ projectId: string; branch: string } | null>(null);
   const [pushing, setPushing] = useState(false);
   const [pushError, setPushError] = useState<string | null>(null);
+  const [commitDialog, setCommitDialog] = useState<{ projectId: string; branch: string } | null>(null);
+  const [commitMessage, setCommitMessage] = useState('');
+  const [commitLoading, setCommitLoading] = useState(false);
+  const [commitError, setCommitError] = useState<string | null>(null);
+  const [commitPhase, setCommitPhase] = useState<'compose' | 'push'>('compose');
+  const [generatingMessage, setGeneratingMessage] = useState(false);
 
   // Fetch branch statuses for all projects
   useEffect(() => {
@@ -338,6 +344,82 @@ export function ProjectManager() {
       const next = new Map(prev);
       if (updated && updated.length > 0) next.set(projectId, updated);
       else next.delete(projectId);
+      return next;
+    });
+  };
+
+  const openCommitDialog = async (projectId: string, branch: string) => {
+    setCommitDialog({ projectId, branch });
+    setCommitMessage('');
+    setCommitError(null);
+    setCommitPhase('compose');
+    setGeneratingMessage(true);
+    try {
+      const msg = await api.gitGenerateCommitMessage(projectId, branch);
+      setCommitMessage(msg);
+    } catch {
+      // User can write their own
+    } finally {
+      setGeneratingMessage(false);
+    }
+  };
+
+  const handleCommit = async () => {
+    if (!commitDialog || !commitMessage.trim()) return;
+    setCommitLoading(true);
+    setCommitError(null);
+    const result = await api.gitCommit(commitDialog.projectId, commitMessage.trim(), commitDialog.branch);
+    if (!result.success) {
+      setCommitError(result.error || 'Commit failed');
+      setCommitLoading(false);
+      return;
+    }
+
+    // Auto-accept all completed jobs on this project+branch
+    const projectJobs = jobs.filter(
+      (j) => j.projectId === commitDialog.projectId && j.status === 'completed' && (j.branch === commitDialog.branch || (!j.branch && branchStatuses.get(commitDialog.projectId)?.find((b) => b.name === commitDialog.branch)?.isCurrent))
+    );
+    for (const j of projectJobs) {
+      try { await api.jobsAcceptJob(j.id); } catch { /* best effort */ }
+    }
+
+    setCommitLoading(false);
+
+    // Refresh branch statuses
+    const updated = await api.gitBranchesStatus(commitDialog.projectId);
+    setBranchStatuses((prev) => {
+      const next = new Map(prev);
+      if (updated && updated.length > 0) next.set(commitDialog.projectId, updated);
+      else next.delete(commitDialog.projectId);
+      return next;
+    });
+
+    // Check if there are commits to push now
+    const branchAfter = updated?.find((b) => b.name === commitDialog.branch);
+    if (branchAfter && branchAfter.ahead > 0) {
+      setCommitPhase('push');
+    } else {
+      setCommitDialog(null);
+    }
+  };
+
+  const handleCommitThenPush = async () => {
+    if (!commitDialog) return;
+    setPushing(true);
+    setCommitError(null);
+    const result = await api.gitPush(commitDialog.projectId, commitDialog.branch);
+    setPushing(false);
+    if (!result.success) {
+      setCommitError(result.error || 'Push failed');
+      return;
+    }
+    setCommitDialog(null);
+    // Refresh branch statuses
+    const updated = await api.gitBranchesStatus(commitDialog.projectId);
+    setBranchStatuses((prev) => {
+      const next = new Map(prev);
+      if (updated && updated.length > 0) next.set(commitDialog.projectId, updated);
+      else next.delete(commitDialog.projectId);
       return next;
     });
   };
@@ -554,22 +636,26 @@ export function ProjectManager() {
                           canPush ? `${b.ahead} commit${b.ahead > 1 ? 's' : ''} to push — click to push` : '',
                         ].filter(Boolean).join(' · ');
 
-                        const ChipTag = canPush ? 'button' : 'span';
+                        const isActionable = canPush || b.dirtyFiles > 0;
 
                         return (
-                          <ChipTag
+                          <button
                             key={b.name}
-                            {...(canPush ? {
-                              onClick: (e: React.MouseEvent) => {
-                                e.stopPropagation();
+                            onClick={(e: React.MouseEvent) => {
+                              e.stopPropagation();
+                              if (b.dirtyFiles > 0) {
+                                openCommitDialog(project.id, b.name);
+                              } else if (canPush) {
                                 setPushConfirm({ projectId: project.id, branch: b.name });
-                              },
-                            } : {})}
+                              }
+                            }}
                             title={chipTitle}
                             className={`inline-flex items-center gap-0.5 px-1.5 py-px rounded border text-[9px] font-medium transition-colors ${
                               canPush
                                 ? 'border-column-development/20 bg-column-development/6 text-column-development hover:bg-column-development/15 hover:border-column-development/40 cursor-pointer'
-                                : 'border-semantic-warning/20 bg-semantic-warning/6 text-semantic-warning'
+                                : isActionable
+                                  ? 'border-semantic-warning/20 bg-semantic-warning/6 text-semantic-warning hover:bg-semantic-warning/15 hover:border-semantic-warning/40 cursor-pointer'
+                                  : 'border-semantic-warning/20 bg-semantic-warning/6 text-semantic-warning'
                             }`}
                           >
                             <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
@@ -580,12 +666,12 @@ export function ProjectManager() {
                             </svg>
                             <span className="truncate max-w-[56px]">{b.name}</span>
                             {b.dirtyFiles > 0 && (
-                              <span className="tabular-nums opacity-80">{b.dirtyFiles}M</span>
+                              <span className="tabular-nums opacity-80">±{b.dirtyFiles}</span>
                             )}
                             {canPush && (
                               <span className="tabular-nums">{b.ahead}&#8593;</span>
                             )}
-                          </ChipTag>
+                          </button>
                         );
                       })}
                     </div>
@@ -668,6 +754,111 @@ export function ProjectManager() {
                 {pushing ? 'Pushing...' : 'Push'}
               </button>
             </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {/* Commit dialog */}
+      {commitDialog && createPortal(
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center"
+          onClick={() => { if (!commitLoading && !pushing) { setCommitDialog(null); } }}
+        >
+          <div className="absolute inset-0 bg-surface-overlay/40 backdrop-blur-[2px]" />
+          <div
+            className="relative rounded-xl border border-chrome/50 bg-surface-elevated shadow-2xl p-4 w-80 animate-[dialogIn_150ms_ease-out]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {commitPhase === 'compose' ? (
+              <>
+                <p className="text-sm text-content-primary font-medium">Commit changes</p>
+                <p className="text-xs text-content-secondary mt-1">
+                  Branch <span className="font-mono font-medium text-content-primary">{commitDialog.branch}</span>
+                </p>
+                <div className="mt-3">
+                  {generatingMessage ? (
+                    <div className="flex items-center gap-2 py-3 text-xs text-content-tertiary">
+                      <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
+                        <path d="M12 2a10 10 0 019.5 7" strokeLinecap="round" />
+                      </svg>
+                      Generating commit message...
+                    </div>
+                  ) : (
+                    <textarea
+                      value={commitMessage}
+                      onChange={(e) => setCommitMessage(e.target.value)}
+                      placeholder="Commit message..."
+                      rows={3}
+                      className="w-full text-xs rounded border border-chrome bg-surface-tertiary/40 px-2.5 py-2 text-content-primary placeholder:text-content-tertiary outline-none focus:border-active-indicator/50 focus:ring-1 focus:ring-focus-ring/30 resize-none font-mono leading-relaxed"
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                          e.preventDefault();
+                          handleCommit();
+                        }
+                      }}
+                    />
+                  )}
+                </div>
+                {commitError && (
+                  <p className="text-xs text-status-error mt-2 bg-status-error/10 rounded px-2 py-1.5 break-words">
+                    {commitError}
+                  </p>
+                )}
+                <div className="flex items-center justify-end gap-2 mt-3">
+                  <button
+                    onClick={() => setCommitDialog(null)}
+                    disabled={commitLoading}
+                    className="px-3 py-1 text-xs rounded text-content-tertiary hover:bg-surface-tertiary/70 transition-colors disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleCommit}
+                    disabled={commitLoading || generatingMessage || !commitMessage.trim()}
+                    className="px-3 py-1 text-xs font-medium rounded bg-semantic-warning/15 text-semantic-warning hover:bg-semantic-warning/25 transition-colors disabled:opacity-50"
+                  >
+                    {commitLoading ? 'Committing...' : 'Commit'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-2">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-semantic-success shrink-0">
+                    <circle cx="8" cy="8" r="6" />
+                    <path d="M5.5 8l2 2 3.5-3.5" />
+                  </svg>
+                  <p className="text-sm text-content-primary font-medium">Committed</p>
+                </div>
+                <p className="text-xs text-content-secondary mt-2">
+                  Push <span className="font-mono font-medium text-content-primary">{commitDialog.branch}</span> to origin?
+                </p>
+                {commitError && (
+                  <p className="text-xs text-status-error mt-2 bg-status-error/10 rounded px-2 py-1.5 break-words">
+                    {commitError}
+                  </p>
+                )}
+                <div className="flex items-center justify-end gap-2 mt-4">
+                  <button
+                    onClick={() => setCommitDialog(null)}
+                    disabled={pushing}
+                    className="px-3 py-1 text-xs rounded text-content-tertiary hover:bg-surface-tertiary/70 transition-colors disabled:opacity-50"
+                  >
+                    Later
+                  </button>
+                  <button
+                    onClick={handleCommitThenPush}
+                    disabled={pushing}
+                    className="px-3 py-1 text-xs font-medium rounded bg-column-development/15 text-column-development hover:bg-column-development/25 transition-colors disabled:opacity-50"
+                  >
+                    {pushing ? 'Pushing...' : 'Push'}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>,
         document.body,

@@ -1,4 +1,4 @@
-export type { KanbanColumn, JobStatus, Project, OutputEntry, RawMessage, PendingQuestion, FollowUp, Job, GitSnapshot, ShortcutBinding, AppSettings } from '../../shared/types';
+export type { KanbanColumn, JobStatus, Project, OutputEntry, RawMessage, PendingQuestion, FollowUp, Job, GitSnapshot, ShortcutBinding, AppSettings, ThemeMode } from '../../shared/types';
 export { DEFAULT_SETTINGS, DEFAULT_SHORTCUTS, DEFAULT_COMMIT_PROMPT } from '../../shared/types';
 import type { Project, Job, OutputEntry, RawMessage, PendingQuestion, AppSettings } from '../../shared/types';
 
@@ -16,6 +16,8 @@ export interface ElectronAPI {
   gitListBranches: (projectId: string) => Promise<{ branches: string[]; current: string } | null>;
   gitBranchesStatus: (projectId: string) => Promise<{ name: string; isCurrent: boolean; ahead: number; dirtyFiles: number }[] | null>;
   gitPush: (projectId: string, branch: string) => Promise<{ success: boolean; error?: string }>;
+  gitCommit: (projectId: string, message: string, branch?: string) => Promise<{ success: boolean; sha?: string; error?: string }>;
+  gitGenerateCommitMessage: (projectId: string, branch?: string) => Promise<string>;
 
   // Jobs
   jobsList: () => Promise<Job[]>;
@@ -36,6 +38,10 @@ export interface ElectronAPI {
   // Settings
   settingsGet: () => Promise<AppSettings>;
   settingsUpdate: (partial: Partial<AppSettings>) => Promise<AppSettings>;
+
+  // Theme
+  themeGetActual: () => Promise<'light' | 'dark'>;
+  onThemeChanged: (callback: (actual: 'light' | 'dark') => void) => () => void;
 
   // CLAUDE.md
   claudeMdRead: (projectId: string) => Promise<{ exists: boolean; content: string }>;

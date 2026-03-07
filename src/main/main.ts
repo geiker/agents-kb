@@ -1,11 +1,11 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, nativeTheme } from 'electron';
 import path from 'path';
 
 console.log('[main] Starting Agent Kanban...');
 
 import { registerIpcHandlers } from './ipc-handlers';
 import { sessionManager } from './session-manager';
-import { flushNow } from './store';
+import { flushNow, getSettings } from './store';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -43,6 +43,10 @@ const createWindow = () => {
 registerIpcHandlers(() => mainWindow);
 
 app.whenReady().then(() => {
+  // Apply saved theme preference
+  const settings = getSettings();
+  nativeTheme.themeSource = settings.theme;
+
   createWindow();
 
   app.on('activate', () => {

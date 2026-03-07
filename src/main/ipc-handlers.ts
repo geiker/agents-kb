@@ -1,4 +1,4 @@
-import { ipcMain, dialog, BrowserWindow } from 'electron';
+import { ipcMain, dialog, BrowserWindow, nativeTheme } from 'electron';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
@@ -92,6 +92,24 @@ class BatchedSender {
       }
     }
     this.rawMessageBatches.clear();
+  }
+}
+
+// Cache of pre-generated commit messages keyed by "projectId:branch"
+const commitMessageCache = new Map<string, string>();
+
+async function generateAndCacheBranchCommitMessage(projectId: string, branch: string) {
+  const project = getProjects().find(p => p.id === projectId);
+  if (!project) return;
+  try {
+    const settings = getSettings();
+    const prompt = settings.commitPrompt || 'Generate a concise conventional commit message for the current uncommitted changes. Output ONLY the commit message, nothing else.';
+    const message = await runClaudePrint(project.path, prompt);
+    if (message) {
+      commitMessageCache.set(`${projectId}:${branch}`, message);
+    }
+  } catch {
+    // Best-effort
   }
 }
 
@@ -230,8 +248,16 @@ async function startClaudeSession(job: Job, getWindow: WindowGetter, batchedSend
         sendToRenderer(getWindow, 'job:complete', { jobId: job.id });
         notifyJobComplete(job.id, getWindow);
 
-        // Generate commit message in the background
+        // Generate commit message in the background (per-job + per-branch cache)
         generateCommitMessageInBackground(job.id, getWindow);
+
+        // Pre-generate branch commit message
+        (async () => {
+          const project = getProjects().find(p => p.id === job.projectId);
+          if (!project) return;
+          const branch = job.branch || (await listBranches(project.path))?.current;
+          if (branch) generateAndCacheBranchCommitMessage(job.projectId, branch);
+        })();
       }
     } else {
       if (current.status === 'running') {
@@ -385,6 +411,37 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     const project = getProjects().find(p => p.id === projectId);
     if (!project) return { success: false, error: 'Project not found' };
     return gitPush(project.path, branch);
+  });
+
+  ipcMain.handle('git:commit', async (_event, projectId: string, message: string, branch?: string) => {
+    const project = getProjects().find(p => p.id === projectId);
+    if (!project) return { success: false, error: 'Project not found' };
+    try {
+      await gitStageAll(project.path);
+      const sha = await gitCommit(project.path, message);
+      // Clear cached commit message for this branch
+      if (branch) commitMessageCache.delete(`${projectId}:${branch}`);
+      return { success: true, sha };
+    } catch (err: unknown) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('git:generate-commit-message', async (_event, projectId: string, branch?: string) => {
+    // Return cached message if available
+    if (branch) {
+      const cacheKey = `${projectId}:${branch}`;
+      const cached = commitMessageCache.get(cacheKey);
+      if (cached) {
+        commitMessageCache.delete(cacheKey);
+        return cached;
+      }
+    }
+    const project = getProjects().find(p => p.id === projectId);
+    if (!project) throw new Error('Project not found');
+    const settings = getSettings();
+    const prompt = settings.commitPrompt || 'Generate a concise conventional commit message for the current uncommitted changes. Output ONLY the commit message, nothing else.';
+    return runClaudePrint(project.path, prompt);
   });
 
   // === Jobs ===
@@ -767,7 +824,21 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
   });
 
   ipcMain.handle('settings:update', (_event, partial: Partial<AppSettings>) => {
-    return updateSettings(partial);
+    const updated = updateSettings(partial);
+    if (partial.theme) {
+      nativeTheme.themeSource = partial.theme;
+    }
+    return updated;
+  });
+
+  // === Theme ===
+  ipcMain.handle('theme:get-actual', () => {
+    return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+  });
+
+  nativeTheme.on('updated', () => {
+    const actual = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+    sendToRenderer(getWindow, 'theme:changed', actual);
   });
 
   ipcMain.handle('jobs:reject-job', async (_event, jobId: string, snapshotIndex?: number) => {

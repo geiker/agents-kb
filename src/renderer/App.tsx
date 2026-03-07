@@ -7,16 +7,30 @@ import { JobDetailPanel } from './components/JobDetailPanel';
 import { NewJobDialog } from './components/NewJobDialog';
 import { Kbd } from './components/Kbd';
 
+function applyDarkClass(isDark: boolean) {
+  document.documentElement.classList.toggle('dark', isDark);
+}
+
 export default function App() {
   const init = useKanbanStore((s) => s.init);
   const selectedJobId = useKanbanStore((s) => s.selectedJobId);
   const showNewJobDialog = useKanbanStore((s) => s.showNewJobDialog);
   const setShowNewJobDialog = useKanbanStore((s) => s.setShowNewJobDialog);
   const projects = useKanbanStore((s) => s.projects);
+  const theme = useKanbanStore((s) => s.settings.theme);
 
   useEffect(() => {
     init().catch((err) => console.error('[App] init failed:', err));
   }, [init]);
+
+  // Sync dark class with actual resolved theme from main process
+  useEffect(() => {
+    const api = window.electronAPI;
+    // Get initial actual theme
+    api.themeGetActual().then((actual) => applyDarkClass(actual === 'dark'));
+    // Listen for changes (system theme change or user toggle)
+    return api.onThemeChanged((actual) => applyDarkClass(actual === 'dark'));
+  }, [theme]);
 
   const openNewJob = useCallback(() => {
     if (projects.length > 0) setShowNewJobDialog(true);

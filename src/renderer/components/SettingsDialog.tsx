@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useKanbanStore } from '../hooks/useKanbanStore';
 import { useElectronAPI } from '../hooks/useElectronAPI';
 import { KbdRaw } from './Kbd';
-import type { AppSettings, ShortcutBinding } from '../types/index';
+import type { AppSettings, ShortcutBinding, ThemeMode } from '../types/index';
 import { DEFAULT_SETTINGS, DEFAULT_COMMIT_PROMPT } from '../types/index';
 
 const isMac =
@@ -141,6 +141,28 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         {/* Content */}
         <div className="px-5 py-4 space-y-5 overflow-y-auto max-h-[60vh]">
 
+          {/* Appearance */}
+          <div>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-content-tertiary">
+              Appearance
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-[13px] text-content-primary">Theme</div>
+              <div className="text-[11px] text-content-tertiary mt-0.5">
+                Select light, dark, or match your system
+              </div>
+            </div>
+            <ThemePicker
+              value={local.theme}
+              onChange={(theme) => save({ ...local, theme })}
+            />
+          </div>
+
+          <div className="border-t border-chrome-subtle/40" />
+
           {/* Section header */}
           <div>
             <span className="text-[10px] font-semibold uppercase tracking-wider text-content-tertiary">
@@ -237,6 +259,40 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void 
         }`}
       />
     </button>
+  );
+}
+
+/* ─── Theme Picker ─── */
+
+const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
+  { value: 'system', label: 'System' },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+];
+
+function ThemePicker({
+  value,
+  onChange,
+}: {
+  value: ThemeMode;
+  onChange: (theme: ThemeMode) => void;
+}) {
+  return (
+    <div className="flex shrink-0 rounded-lg border border-chrome/60 overflow-hidden">
+      {THEME_OPTIONS.map((opt) => (
+        <button
+          key={opt.value}
+          onClick={() => onChange(opt.value)}
+          className={`px-3.5 py-1 text-[12px] font-medium transition-colors ${
+            value === opt.value
+              ? 'bg-btn-primary text-content-inverted'
+              : 'bg-surface-tertiary/30 text-content-secondary hover:bg-surface-tertiary/60'
+          }`}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
   );
 }
 
