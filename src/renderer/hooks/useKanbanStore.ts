@@ -21,6 +21,7 @@ interface KanbanState {
   removeProject: (id: string) => void;
   renameProject: (id: string, name: string) => void;
   setProjectDefaultBranch: (id: string, branch: string | null) => void;
+  setProjectColor: (id: string, color: string | null) => void;
   reorderProjects: (orderedIds: string[]) => void;
 
   setJobs: (jobs: Job[]) => void;
@@ -67,6 +68,14 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
       if (p.id !== id) return p;
       if (branch) return { ...p, defaultBranch: branch };
       const { defaultBranch: _, ...rest } = p;
+      return rest;
+    }),
+  })),
+  setProjectColor: (id, color) => set((s) => ({
+    projects: s.projects.map(p => {
+      if (p.id !== id) return p;
+      if (color) return { ...p, color: color as Project['color'] };
+      const { color: _, ...rest } = p;
       return rest;
     }),
   })),

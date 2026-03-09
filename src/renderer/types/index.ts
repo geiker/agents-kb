@@ -1,5 +1,5 @@
-export type { KanbanColumn, JobStatus, Project, OutputEntry, RawMessage, PendingQuestion, FollowUp, Job, GitSnapshot, JobStepSnapshot, JobFileSnapshot, ShortcutBinding, AppSettings, ThemeMode, ModelChoice, EffortLevel, ModelOption, EffortOption, PromptConfig, PromptId, PreferredEditor } from '../../shared/types';
-export { DEFAULT_SETTINGS, DEFAULT_SHORTCUTS, DEFAULT_COMMIT_PROMPT, DEFAULT_PROMPT_CONFIGS, PROMPT_IDS, MODEL_CATALOG, EFFORT_CATALOG } from '../../shared/types';
+export type { KanbanColumn, JobStatus, Project, OutputEntry, RawMessage, PendingQuestion, FollowUp, Job, GitSnapshot, JobStepSnapshot, JobFileSnapshot, ShortcutBinding, AppSettings, ThemeMode, ModelChoice, EffortLevel, ModelOption, EffortOption, PromptConfig, PromptId, PreferredEditor, ProjectColorId } from '../../shared/types';
+export { DEFAULT_SETTINGS, DEFAULT_SHORTCUTS, DEFAULT_COMMIT_PROMPT, DEFAULT_PROMPT_CONFIGS, PROMPT_IDS, MODEL_CATALOG, EFFORT_CATALOG, PROJECT_COLORS, getProjectColor } from '../../shared/types';
 import type { Project, Job, OutputEntry, RawMessage, PendingQuestion, AppSettings, ModelChoice, EffortLevel } from '../../shared/types';
 
 // IPC API exposed via preload
@@ -11,6 +11,7 @@ export interface ElectronAPI {
   projectsRemove: (id: string) => Promise<void>;
   projectsReorder: (orderedIds: string[]) => Promise<Project[]>;
   projectsSetDefaultBranch: (id: string, branch: string | null) => Promise<Project | undefined>;
+  projectsSetColor: (id: string, color: string | null) => Promise<Project | undefined>;
   projectsOpenInEditor: (id: string, branch?: string) => Promise<{ success: boolean; editor?: string; error?: string }>;
 
   // Git

@@ -115,7 +115,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showModelEffortInNewJob: false,
   preferredEditor: "auto",
   notificationsEnabled: true,
-  deleteCompletedJobsOnCommit: false,
+  deleteCompletedJobsOnCommit: true,
 };
 
 /* ─── Kanban ─── */
@@ -157,6 +157,29 @@ export interface JobStepSnapshot {
   files: JobFileSnapshot[];
 }
 
+export const PROJECT_COLORS = [
+  { id: 'slate',   hex: '#64748b' },
+  { id: 'red',     hex: '#ef4444' },
+  { id: 'orange',  hex: '#f97316' },
+  { id: 'amber',   hex: '#f59e0b' },
+  { id: 'lime',    hex: '#84cc16' },
+  { id: 'emerald', hex: '#10b981' },
+  { id: 'teal',    hex: '#14b8a6' },
+  { id: 'cyan',    hex: '#06b6d4' },
+  { id: 'blue',    hex: '#3b82f6' },
+  { id: 'indigo',  hex: '#6366f1' },
+  { id: 'violet',  hex: '#8b5cf6' },
+  { id: 'pink',    hex: '#ec4899' },
+  { id: 'rose',    hex: '#f43f5e' },
+] as const;
+
+export type ProjectColorId = (typeof PROJECT_COLORS)[number]['id'];
+
+export function getProjectColor(colorId?: string): string {
+  const found = PROJECT_COLORS.find(c => c.id === colorId);
+  return found ? found.hex : PROJECT_COLORS[0].hex;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -164,6 +187,7 @@ export interface Project {
   addedAt: string;
   defaultBranch?: string;
   isGitRepo?: boolean;
+  color?: ProjectColorId;
 }
 
 export interface OutputEntry {

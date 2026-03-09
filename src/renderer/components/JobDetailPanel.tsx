@@ -9,7 +9,7 @@ import { DiffViewer } from './DiffViewer';
 import { MentionInput } from './MentionInput';
 import { formatDuration, useNow } from '../utils/duration';
 import type { Job, FollowUp, GitSnapshot, AppSettings, OutputEntry } from '../types/index';
-import { MODEL_CATALOG, EFFORT_CATALOG } from '../types/index';
+import { MODEL_CATALOG, EFFORT_CATALOG, getProjectColor } from '../types/index';
 import { BrainIcon, BranchIcon } from './Icons';
 import { PlanMarkdown } from './PlanMarkdown';
 
@@ -44,6 +44,7 @@ export function JobDetailPanel() {
   if (!job) return null;
 
   const project = projects.find((p) => p.id === job.projectId);
+  const projectColor = getProjectColor(project?.color);
   const settings = useKanbanStore((s) => s.settings);
 
   const handleRespond = async () => {
@@ -131,6 +132,9 @@ export function JobDetailPanel() {
 
   return (
     <div className="w-[480px] shrink-0 border-l border-chrome-subtle/70 bg-surface-secondary flex flex-col overflow-hidden">
+      {/* Project color accent bar */}
+      <div className="h-[3px] shrink-0" style={{ backgroundColor: projectColor }} />
+
       {/* Header */}
       <div className="shrink-0 border-b border-chrome-subtle/70">
         {/* Top row: project/branch + action icons */}
@@ -142,12 +146,10 @@ export function JobDetailPanel() {
                 className="group/open flex items-center gap-1.5 hover:text-content-secondary transition-colors rounded -ml-1 px-1 py-0.5"
                 title={`Open ${project.isGitRepo ? 'in editor' : 'folder'}${job.branch ? ` on ${job.branch}` : ''}`}
               >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 opacity-50 group-hover/open:opacity-100 transition-opacity">
-                  <rect x="2" y="2" width="12" height="12" rx="2" />
-                  <path d="M5.5 6L4 8l1.5 2" />
-                  <path d="M10.5 6L12 8l-1.5 2" />
-                  <path d="M9 5l-2 6" />
-                </svg>
+                <span
+                  className="inline-block w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: projectColor }}
+                />
                 <span>{project.name}</span>
               </button>
             ) : (

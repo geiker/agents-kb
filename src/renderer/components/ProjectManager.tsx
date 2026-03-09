@@ -5,6 +5,7 @@ import { useElectronAPI } from '../hooks/useElectronAPI';
 import { ClaudeMdEditor } from './ClaudeMdEditor';
 import { Kbd } from './Kbd';
 import type { KanbanColumn, Project } from '../types/index';
+import { PROJECT_COLORS, getProjectColor } from '../types/index';
 
 interface BranchStatus {
   name: string;
@@ -34,6 +35,7 @@ function ProjectDetailDialog({
   onRename,
   onRemove,
   onSetDefaultBranch,
+  onSetColor,
 }: {
   project: Project;
   stats: { counts: Record<KanbanColumn, number>; hasNotification: boolean } | undefined;
@@ -41,6 +43,7 @@ function ProjectDetailDialog({
   onRename: (name: string) => void;
   onRemove: () => void;
   onSetDefaultBranch: (branch: string | null) => void;
+  onSetColor: (color: string | null) => void;
 }) {
   const [name, setName] = useState(project.name);
   const [isEditing, setIsEditing] = useState(false);
@@ -204,6 +207,34 @@ function ProjectDetailDialog({
                 <p className="text-xs text-content-secondary mt-0.5">{addedDate}</p>
               </div>
 
+              {/* Color */}
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-content-tertiary font-medium">Color</span>
+                <div className="flex flex-wrap gap-1.5 mt-1.5">
+                  {PROJECT_COLORS.map((c) => {
+                    const isActive = (project.color || PROJECT_COLORS[0].id) === c.id;
+                    return (
+                      <button
+                        key={c.id}
+                        onClick={() => onSetColor(c.id === PROJECT_COLORS[0].id ? null : c.id)}
+                        className={`w-5 h-5 rounded-full transition-all duration-150 ${
+                          isActive
+                            ? 'ring-2 ring-offset-1 ring-offset-surface-elevated scale-110'
+                            : 'hover:scale-110'
+                        }`}
+                        style={{
+                          backgroundColor: c.hex,
+                          ...(isActive ? { ringColor: c.hex } as React.CSSProperties : {}),
+                          boxShadow: isActive ? `0 0 0 2px ${c.hex}40` : undefined,
+                        }}
+                        title={c.id}
+                        aria-label={`Set project color to ${c.id}`}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Default Branch */}
               {branches.length > 0 && (
                 <div>
@@ -323,6 +354,7 @@ export function ProjectManager() {
   const selectedProjectId = useKanbanStore((s) => s.selectedProjectId);
   const selectProject = useKanbanStore((s) => s.selectProject);
   const setProjectDefaultBranch = useKanbanStore((s) => s.setProjectDefaultBranch);
+  const setProjectColor = useKanbanStore((s) => s.setProjectColor);
   const api = useElectronAPI();
 
   const setShowSettings = useKanbanStore((s) => s.setShowSettings);
@@ -498,6 +530,11 @@ export function ProjectManager() {
     setProjectDefaultBranch(id, branch);
   };
 
+  const handleSetColor = async (id: string, color: string | null) => {
+    await api.projectsSetColor(id, color);
+    setProjectColor(id, color);
+  };
+
   const handleDragStart = (e: React.DragEvent, id: string) => {
     draggedId.current = id;
     e.dataTransfer.effectAllowed = 'move';
@@ -623,6 +660,10 @@ export function ProjectManager() {
                 <div className={`flex-1 min-w-0 pr-1.5 ${branches.length > 0 ? 'py-1.5' : 'py-2'}`}>
                   {/* Primary row: name + info icon + notification */}
                   <div className="flex items-center gap-1">
+                    <span
+                      className="inline-block w-2 h-2 rounded-full shrink-0"
+                      style={{ backgroundColor: getProjectColor(project.color) }}
+                    />
                     <span className={`text-[13px] font-medium truncate transition-colors ${
                       isSelected ? 'text-content-primary' : ''
                     }`}>
@@ -913,6 +954,7 @@ export function ProjectManager() {
             onRename={(name) => handleRenameProject(detailProjectId, name)}
             onRemove={() => handleRemoveProject(detailProjectId)}
             onSetDefaultBranch={(branch) => handleSetDefaultBranch(detailProjectId, branch)}
+            onSetColor={(color) => handleSetColor(detailProjectId, color)}
           />
         );
       })()}

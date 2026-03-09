@@ -105,6 +105,19 @@ export function setProjectDefaultBranch(id: string, branch: string | null): Proj
   return project;
 }
 
+export function setProjectColor(id: string, color: string | null): Project | undefined {
+  const projects = store.get('projects');
+  const project = projects.find(p => p.id === id);
+  if (!project) return undefined;
+  if (color) {
+    project.color = color as Project['color'];
+  } else {
+    delete project.color;
+  }
+  store.set('projects', projects);
+  return project;
+}
+
 export function reorderProjects(orderedIds: string[]): Project[] {
   const projects = store.get('projects');
   const byId = new Map(projects.map(p => [p.id, p]));

@@ -9,6 +9,7 @@ const api: ElectronAPI = {
   projectsRemove: (id) => ipcRenderer.invoke('projects:remove', id),
   projectsReorder: (orderedIds) => ipcRenderer.invoke('projects:reorder', orderedIds),
   projectsSetDefaultBranch: (id, branch) => ipcRenderer.invoke('projects:set-default-branch', id, branch),
+  projectsSetColor: (id, color) => ipcRenderer.invoke('projects:set-color', id, color),
   projectsOpenInEditor: (id, branch) => ipcRenderer.invoke('projects:open-in-editor', id, branch),
 
   // Git

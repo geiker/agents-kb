@@ -3,7 +3,7 @@ import { useKanbanStore } from '../hooks/useKanbanStore';
 import { NotificationBadge } from './NotificationBadge';
 import { formatDuration, useNow } from '../utils/duration';
 import type { Job, KanbanColumn, JobStatus, FollowUp } from '../types/index';
-import { MODEL_CATALOG, EFFORT_CATALOG } from '../types/index';
+import { MODEL_CATALOG, EFFORT_CATALOG, getProjectColor } from '../types/index';
 import { BrainIcon } from './Icons';
 
 interface JobCardProps {
@@ -30,17 +30,12 @@ const statusColors: Record<JobStatus, string> = {
   'rejected': 'text-status-error',
 };
 
-const columnAccent: Record<KanbanColumn, string> = {
-  planning: 'border-l-column-planning',
-  development: 'border-l-column-development',
-  done: 'border-l-column-done',
-};
-
 export const JobCard = memo(function JobCard({ job }: JobCardProps) {
   const selectJob = useKanbanStore((s) => s.selectJob);
   const selectedJobId = useKanbanStore((s) => s.selectedJobId);
   const projects = useKanbanStore((s) => s.projects);
   const project = projects.find((p) => p.id === job.projectId);
+  const projectColor = getProjectColor(project?.color);
   const [expanded, setExpanded] = useState(false);
   const [isClamped, setIsClamped] = useState(false);
   const promptRef = useRef<HTMLDivElement>(null);
@@ -74,13 +69,13 @@ export const JobCard = memo(function JobCard({ job }: JobCardProps) {
   return (
     <div
       className={`
-        w-full text-left rounded-lg border-l-2 transition-all cursor-pointer
-        ${columnAccent[job.column]}
+        w-full text-left rounded-lg border-l-[3px] transition-all cursor-pointer
         ${isSelected
           ? 'bg-selected-bg ring-1 ring-selected-border'
           : 'bg-surface-elevated hover:bg-surface-tertiary/40'
         }
       `}
+      style={{ borderLeftColor: projectColor }}
       onClick={handleClick}
     >
       <div className="px-3 py-2.5">
@@ -88,8 +83,14 @@ export const JobCard = memo(function JobCard({ job }: JobCardProps) {
         <div className="flex items-center justify-between mb-1">
           <div className="flex items-center gap-1.5 min-w-0">
             {project && (
-              <span className="text-[9px] font-semibold text-content-tertiary uppercase tracking-[0.08em] truncate">
-                {project.name}
+              <span className="flex items-center gap-1 min-w-0">
+                <span
+                  className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+                  style={{ backgroundColor: projectColor }}
+                />
+                <span className="text-[9px] font-semibold text-content-tertiary uppercase tracking-[0.08em] truncate">
+                  {project.name}
+                </span>
               </span>
             )}
             {job.branch && (

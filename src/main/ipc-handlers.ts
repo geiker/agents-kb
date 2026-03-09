@@ -10,6 +10,7 @@ import {
   renameProject,
   reorderProjects,
   setProjectDefaultBranch,
+  setProjectColor,
   getJobs,
   getJob,
   saveJob,
@@ -609,6 +610,10 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
 
   ipcMain.handle('projects:set-default-branch', (_event, id: string, branch: string | null) => {
     return setProjectDefaultBranch(id, branch);
+  });
+
+  ipcMain.handle('projects:set-color', (_event, id: string, color: string | null) => {
+    return setProjectColor(id, color);
   });
 
   ipcMain.handle('projects:open-in-editor', async (_event, projectId: string, branch?: string) => {
