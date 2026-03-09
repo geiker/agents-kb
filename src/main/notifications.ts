@@ -53,21 +53,6 @@ export function notifyInputNeeded(
   });
 }
 
-export function notifyPlanReady(
-  jobId: string,
-  projectName: string,
-  jobTitle: string,
-  getWindow: () => BrowserWindow | null,
-): void {
-  showNotification({
-    jobId,
-    projectName,
-    jobTitle,
-    subtitle: "Plan ready for review",
-    getWindow,
-  });
-}
-
 export function notifyJobComplete(
   jobId: string,
   projectName: string,

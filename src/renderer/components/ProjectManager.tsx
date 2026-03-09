@@ -496,7 +496,7 @@ export function ProjectManager() {
         stats.set(job.projectId, entry);
       }
       entry.counts[job.column]++;
-      if (job.pendingQuestion || job.status === 'waiting-input' || job.status === 'plan-ready') {
+      if (job.pendingQuestion || job.status === 'waiting-input') {
         entry.hasNotification = true;
       }
     }

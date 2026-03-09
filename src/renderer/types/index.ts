@@ -34,7 +34,6 @@ export interface ElectronAPI {
   jobsRetry: (jobId: string) => Promise<Job>;
   jobsRespond: (jobId: string, response: string) => Promise<void>;
   jobsEditPlan: (jobId: string, feedback: string) => Promise<Job>;
-  jobsAcceptPlan: (jobId: string) => Promise<void>;
   jobsGetDiff: (jobId: string) => Promise<string | null>;
   jobsRejectJob: (jobId: string, snapshotIndex?: number) => Promise<void>;
   jobsFollowUp: (jobId: string, prompt: string) => Promise<Job>;

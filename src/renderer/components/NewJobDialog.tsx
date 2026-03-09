@@ -5,7 +5,7 @@ import { useShortcut } from '../hooks/useShortcut';
 import { Kbd } from './Kbd';
 import { SegmentedPicker } from './SegmentedPicker';
 import { MentionTextarea } from './MentionInput';
-import { MODEL_CATALOG, EFFORT_CATALOG } from '../types/index';
+import { MODEL_CATALOG, EFFORT_CATALOG, getProjectColor } from '../types/index';
 import type { ModelChoice, EffortLevel } from '../types/index';
 
 interface AttachedImage {
@@ -182,17 +182,28 @@ export function NewJobDialog() {
             Project
             {!filteredProjectId && <Kbd shortcutId="focusProject" />}
           </label>
-          {filteredProjectId ? (
-            <div className="w-full px-3 py-2 text-sm rounded-lg border border-chrome bg-surface-tertiary/50 text-content-primary">
-              {projects.find((p) => p.id === filteredProjectId)?.name}
-            </div>
-          ) : (
+          {filteredProjectId ? (() => {
+            const fp = projects.find((p) => p.id === filteredProjectId);
+            return (
+              <div className="w-full px-3 py-2 text-sm rounded-lg border border-chrome bg-surface-tertiary/50 text-content-primary flex items-center gap-2">
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
+                  style={{ backgroundColor: getProjectColor(fp?.color) }}
+                />
+                {fp?.name}
+              </div>
+            );
+          })() : (
             <div className="relative">
+              <span
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 inline-block w-2.5 h-2.5 rounded-full shrink-0"
+                style={{ backgroundColor: getProjectColor(projects.find((p) => p.id === selectedProjectId)?.color) }}
+              />
               <select
                 ref={projectSelectRef}
                 value={selectedProjectId}
                 onChange={(e) => setSelectedProjectId(e.target.value)}
-                className="w-full appearance-none px-3 pr-10 py-2 text-sm rounded-lg border border-chrome bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-focus-ring/40"
+                className="w-full appearance-none pl-8 pr-10 py-2 text-sm rounded-lg border border-chrome bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-focus-ring/40"
               >
                 {projects.map((p) => (
                   <option key={p.id} value={p.id}>

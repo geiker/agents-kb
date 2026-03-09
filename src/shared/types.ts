@@ -121,7 +121,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 /* ─── Kanban ─── */
 
 export type KanbanColumn = "planning" | "development" | "done";
-export type JobStatus = "running" | "waiting-input" | "plan-ready" | "completed" | "error" | "accepted" | "rejected";
+export type JobStatus = "running" | "waiting-input" | "completed" | "error" | "rejected";
 
 export interface GitSnapshot {
   commitSha: string;
@@ -252,7 +252,6 @@ export interface Job {
   gitSnapshots?: GitSnapshot[];
   stepSnapshots?: JobStepSnapshot[];
   diffText?: string;
-  acceptedAt?: string;
   rejectedAt?: string;
   committedSha?: string;
   generatedCommitMessage?: string;

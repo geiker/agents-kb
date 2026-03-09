@@ -24,7 +24,7 @@ import {
   updateSettings,
 } from './store';
 import { sessionManager } from './session-manager';
-import { notifyInputNeeded, notifyPlanReady, notifyJobComplete, notifyJobError } from './notifications';
+import { notifyInputNeeded, notifyJobComplete, notifyJobError } from './notifications';
 import { isGitRepoRoot, captureSnapshot, restoreSnapshot, cleanupAllSnapshots, getDiff, listBranches, checkoutBranch, gitStageAll, gitCommit, getBranchesStatus, gitPush } from './git-snapshot';
 import { listProjectFiles } from './file-list';
 import type { Job, OutputEntry, RawMessage, PendingQuestion, AppSettings, Project, ModelChoice, EffortLevel, PromptConfig } from '../shared/types';
@@ -99,6 +99,57 @@ function sendToRenderer(getWindow: WindowGetter, channel: string, data: unknown)
 
 function getStepLabel(order: number): string {
   return order === 0 ? 'Initial development' : `Follow-up #${order}`;
+}
+
+async function startDevelopmentPhase(
+  jobId: string,
+  getWindow: WindowGetter,
+  batchedSender: BatchedSender,
+  sessionId?: string,
+  updates: Partial<Job> = {},
+) {
+  const job = getJob(jobId);
+  if (!job) throw new Error('Job not found');
+
+  const now = new Date().toISOString();
+  const project = getProjects().find(p => p.id === job.projectId);
+  const snapshots = [...(job.gitSnapshots || [])];
+  if (snapshots.length === 0 && project && projectIsGitRepo(project)) {
+    const snapshot = await captureSnapshot(project.path, jobId, 0, 'Original');
+    if (snapshot) snapshots.push(snapshot);
+  }
+
+  const outputLog = getOutputLog(jobId);
+  outputLog.push({
+    timestamp: now,
+    type: 'system',
+    content: '--- Planning complete. Starting development phase ---',
+  });
+
+  const updated = updateJob(jobId, {
+    ...updates,
+    column: 'development',
+    status: 'running',
+    pendingQuestion: undefined,
+    waitingStartedAt: undefined,
+    planningEndedAt: updates.planningEndedAt || now,
+    developmentStartedAt: updates.developmentStartedAt || now,
+    gitSnapshots: snapshots,
+    outputLog,
+  });
+
+  if (updated) {
+    stepHistoryTracker.startStep(
+      jobId,
+      getStepLabel((job.stepSnapshots || []).length),
+      (job.stepSnapshots || []).length,
+      snapshots.length > 0 ? 0 : undefined,
+    );
+    sendToRenderer(getWindow, 'job:status-changed', updated);
+    await startClaudeSession(updated, getWindow, batchedSender, 'dev', sessionId || job.sessionId);
+  }
+
+  return updated;
 }
 
 async function cleanupCompletedJobsForBranch(project: Project, branch: string): Promise<string[]> {
@@ -216,9 +267,9 @@ async function startClaudeSession(job: Job, getWindow: WindowGetter, batchedSend
     if (job.skipPlanning) {
       prompt = job.prompt;
     } else if (job.planText) {
-      prompt = `The following plan has been approved. Implement it now.\n\n--- APPROVED PLAN ---\n${job.planText}\n--- END PLAN ---`;
+      prompt = `The planning phase produced this implementation plan. Carry it out now.\n\n--- IMPLEMENTATION PLAN ---\n${job.planText}\n--- END PLAN ---`;
     } else {
-      prompt = 'Continue with the approved plan. Implement the changes.';
+      prompt = 'Continue from planning and implement the requested changes.';
     }
   } else {
     prompt = job.prompt;
@@ -294,17 +345,10 @@ async function startClaudeSession(job: Job, getWindow: WindowGetter, batchedSend
         totalPausedMs += Date.now() - new Date(current.waitingStartedAt).getTime();
       }
 
-      const updated = updateJob(job.id, {
-        status: 'plan-ready',
-        pendingQuestion: undefined,
-        waitingStartedAt: undefined,
+      void startDevelopmentPhase(job.id, getWindow, batchedSender, sessionId, {
         planningEndedAt: new Date().toISOString(),
         totalPausedMs,
       });
-      if (updated) {
-        sendToRenderer(getWindow, 'job:status-changed', updated);
-        notifyPlanReady(job.id, project.name, job.title || job.prompt, getWindow);
-      }
     }
   });
 
@@ -361,16 +405,10 @@ async function startClaudeSession(job: Job, getWindow: WindowGetter, batchedSend
         }
       }
     } else {
-      if (current.status === 'running') {
-        const updated = updateJob(job.id, {
-          status: 'plan-ready',
-          pendingQuestion: undefined,
+      if (current.column === 'planning' && current.status === 'running') {
+        await startDevelopmentPhase(job.id, getWindow, batchedSender, sessionId, {
           planningEndedAt: new Date().toISOString(),
         });
-        if (updated) {
-          sendToRenderer(getWindow, 'job:status-changed', updated);
-          notifyPlanReady(job.id, project.name, job.title || job.prompt, getWindow);
-        }
       }
     }
   });
@@ -1147,49 +1185,6 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     const filePath = path.join(project.path, 'CLAUDE.md');
     fs.writeFileSync(filePath, content, 'utf-8');
     return { success: true };
-  });
-
-  ipcMain.handle('jobs:accept-plan', async (_event, jobId: string) => {
-    const job = getJob(jobId);
-    if (!job) throw new Error('Job not found');
-
-    const now = new Date().toISOString();
-
-    // Capture git snapshot before development starts (git repos only)
-    const project = getProjects().find(p => p.id === job.projectId);
-    const snapshots = [...(job.gitSnapshots || [])];
-    if (snapshots.length === 0 && project && projectIsGitRepo(project)) {
-      const snapshot = await captureSnapshot(project.path, jobId, 0, 'Original');
-      if (snapshot) snapshots.push(snapshot);
-    }
-
-    const outputLog = getOutputLog(jobId);
-    outputLog.push({
-      timestamp: new Date().toISOString(),
-      type: 'system',
-      content: '--- Plan accepted. Starting development phase ---',
-    });
-
-    const updated = updateJob(jobId, {
-      column: 'development',
-      status: 'running',
-      pendingQuestion: undefined,
-      planningEndedAt: now,
-      developmentStartedAt: now,
-      gitSnapshots: snapshots,
-      outputLog,
-    });
-
-    if (updated) {
-      stepHistoryTracker.startStep(
-        jobId,
-        getStepLabel((job.stepSnapshots || []).length),
-        (job.stepSnapshots || []).length,
-        snapshots.length > 0 ? 0 : undefined,
-      );
-      sendToRenderer(getWindow, 'job:status-changed', updated);
-      await startClaudeSession(updated, getWindow, batchedSender, 'dev', job.sessionId);
-    }
   });
 
   ipcMain.handle('jobs:get-diff', async (_event, jobId: string) => {

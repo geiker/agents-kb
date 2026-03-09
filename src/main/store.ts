@@ -8,6 +8,8 @@ interface StoreSchema {
   settings: AppSettings;
 }
 
+type PersistedJob = Job | (Omit<Job, 'status'> & { status: 'accepted' | 'plan-ready'; acceptedAt?: string });
+
 const store = new Store<StoreSchema>({
   name: 'agent-kanban-data',
   defaults: {
@@ -20,8 +22,27 @@ const store = new Store<StoreSchema>({
 // --- In-memory job cache ---
 const jobCache = new Map<string, Job>();
 
+function normalizePersistedJob(job: PersistedJob): Job {
+  if (job.status === 'accepted') {
+    const { acceptedAt: _acceptedAt, ...rest } = job;
+    return { ...rest, status: 'completed' };
+  }
+
+  if (job.status === 'plan-ready') {
+    return {
+      ...job,
+      status: 'error',
+      error: job.error || 'This job was waiting for manual plan acceptance in an older version. Retry to restart it.',
+    };
+  }
+
+  return job;
+}
+
 // Initialize cache from disk, stripping outputLog/rawMessages (they stay in memory only)
-for (const j of store.get('jobs')) {
+const normalizedJobs = (store.get('jobs') as PersistedJob[]).map(normalizePersistedJob);
+store.set('jobs', normalizedJobs);
+for (const j of normalizedJobs) {
   jobCache.set(j.id, { ...j, outputLog: j.outputLog || [], rawMessages: j.rawMessages || [] });
 }
 

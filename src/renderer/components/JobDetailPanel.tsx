@@ -22,10 +22,8 @@ export function JobDetailPanel() {
   const api = useElectronAPI();
   const [responseText, setResponseText] = useState('');
   const [selectedOptions, setSelectedOptions] = useState<Set<string>>(new Set());
-  const [editText, setEditText] = useState('');
   const [followUpText, setFollowUpText] = useState('');
   const [doneTab, setDoneTab] = useState<'summary' | 'diff' | 'log'>('summary');
-  const [showLog, setShowLog] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const job = jobs.find((j) => j.id === selectedJobId);
@@ -56,20 +54,6 @@ export function JobDetailPanel() {
     await api.jobsRespond(job.id, text);
     setResponseText('');
     setSelectedOptions(new Set());
-  };
-
-  const handleAcceptPlan = async () => {
-    await api.jobsAcceptPlan(job.id);
-    selectJob(null);
-  };
-
-  const handleEditPlan = async () => {
-    if (!editText.trim()) return;
-    const updated = await api.jobsEditPlan(job.id, editText.trim());
-    if (updated) {
-      useKanbanStore.getState().updateJob(updated);
-    }
-    setEditText('');
   };
 
   const handleFollowUp = async () => {
@@ -122,8 +106,7 @@ export function JobDetailPanel() {
     }
   };
 
-  const hasPlan = !!job.planText && !job.planText.trim().startsWith('{');
-  const isDone = job.status === 'completed' || job.status === 'accepted' || job.status === 'rejected';
+  const isDone = job.status === 'completed' || job.status === 'rejected';
   const hasSummary = !!job.summaryText && isDone;
   const hasSnapshots = (job.gitSnapshots?.length ?? 0) > 0;
   const hasStepSnapshots = (job.stepSnapshots?.length ?? 0) > 0;
@@ -247,24 +230,6 @@ export function JobDetailPanel() {
         </div>
       </div>
 
-      {/* Plan view when plan is ready */}
-      {hasPlan && job.status === 'plan-ready' && !showLog && (
-        <div className="flex-1 min-h-0 flex flex-col">
-          <div className="flex items-center justify-between px-3 pt-2">
-            <span className="text-[10px] font-semibold text-semantic-success uppercase tracking-wider">Plan Ready</span>
-            <button
-              onClick={() => setShowLog(true)}
-              className="text-[10px] text-content-secondary hover:text-content-primary transition-colors"
-            >
-              Show full log
-            </button>
-          </div>
-          <div className="flex-1 min-h-0 overflow-y-auto p-3">
-            <PlanView content={job.planText!} />
-          </div>
-        </div>
-      )}
-
       {/* Done-state tabbed view (summary / diff / steps / log) */}
       {isDone && (hasSummary || hasDiff) && (
         <div className="flex-1 min-h-0 flex flex-col">
@@ -313,19 +278,9 @@ export function JobDetailPanel() {
         </div>
       )}
 
-      {/* Streaming log for non-done, non-plan states */}
-      {!isDone && (!hasPlan || job.status !== 'plan-ready' || showLog) && (
+      {/* Streaming log for active/error states */}
+      {!isDone && (
         <div className="flex-1 min-h-0 p-3 flex flex-col">
-          {hasPlan && showLog && (
-            <div className="flex justify-end mb-1">
-              <button
-                onClick={() => setShowLog(false)}
-                className="text-[10px] text-content-secondary hover:text-content-primary transition-colors"
-              >
-                Show plan
-              </button>
-            </div>
-          )}
           <StreamingLog entries={outputLog} />
         </div>
       )}
@@ -337,13 +292,9 @@ export function JobDetailPanel() {
         setResponseText={setResponseText}
         selectedOptions={selectedOptions}
         setSelectedOptions={setSelectedOptions}
-        editText={editText}
-        setEditText={setEditText}
         followUpText={followUpText}
         setFollowUpText={setFollowUpText}
         onRespond={handleRespond}
-        onAcceptPlan={handleAcceptPlan}
-        onEditPlan={handleEditPlan}
         onFollowUp={handleFollowUp}
         onRetry={handleRetry}
       />
@@ -362,38 +313,23 @@ interface ActionAreaProps {
   setResponseText: (v: string) => void;
   selectedOptions: Set<string>;
   setSelectedOptions: React.Dispatch<React.SetStateAction<Set<string>>>;
-  editText: string;
-  setEditText: (v: string) => void;
   followUpText: string;
   setFollowUpText: (v: string) => void;
   onRespond: () => void;
-  onAcceptPlan: () => void;
-  onEditPlan: () => void;
   onFollowUp: () => void;
   onRetry: () => void;
 }
 
 function ActionArea({
   job, responseText, setResponseText, selectedOptions, setSelectedOptions,
-  editText, setEditText, followUpText, setFollowUpText,
-  onRespond, onAcceptPlan, onEditPlan, onFollowUp, onRetry,
+  followUpText, setFollowUpText,
+  onRespond, onFollowUp, onRetry,
 }: ActionAreaProps) {
   const followUpRef = useRef<HTMLDivElement>(null);
   useShortcut('submitForm', onFollowUp, {
     ref: followUpRef,
     enabled: job.status === 'completed' && !!followUpText.trim(),
   });
-
-  // No action area needed for accepted/rejected states — show inline banner instead
-  if (job.status === 'accepted') {
-    return (
-      <div className="shrink-0 px-3 py-2 border-t border-chrome-subtle/70">
-        <div className="text-xs text-semantic-success bg-semantic-success/10 rounded-md px-3 py-2 text-center">
-          Changes accepted
-        </div>
-      </div>
-    );
-  }
 
   if (job.status === 'rejected') {
     return (
@@ -500,35 +436,6 @@ function ActionArea({
               Send
             </button>
           </div>
-        </div>
-      )}
-
-      {/* Plan ready — edit + accept */}
-      {job.status === 'plan-ready' && (
-        <div className="space-y-2">
-          <div className="flex gap-2">
-            <MentionInput
-              value={editText}
-              onChange={setEditText}
-              onKeyDown={(e) => e.key === 'Enter' && onEditPlan()}
-              projectId={job.projectId}
-              placeholder="Edit plan: e.g. 'also add tests'..."
-              className="w-full px-3 py-1.5 text-sm rounded-lg border border-chrome bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-focus-ring/40"
-            />
-            <button
-              onClick={onEditPlan}
-              disabled={!editText.trim()}
-              className="px-3 py-1.5 text-sm rounded-lg bg-btn-secondary text-content-inverted hover:bg-btn-secondary-hover disabled:opacity-40 transition-colors"
-            >
-              Edit
-            </button>
-          </div>
-          <button
-            onClick={onAcceptPlan}
-            className="w-full py-2 rounded-lg bg-btn-primary text-content-inverted text-sm font-medium hover:bg-btn-primary-hover transition-colors"
-          >
-            Accept Plan & Start Development
-          </button>
         </div>
       )}
 

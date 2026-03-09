@@ -28,7 +28,6 @@ const api: ElectronAPI = {
   jobsRetry: (jobId) => ipcRenderer.invoke('jobs:retry', jobId),
   jobsRespond: (jobId, response) => ipcRenderer.invoke('jobs:respond', jobId, response),
   jobsEditPlan: (jobId, feedback) => ipcRenderer.invoke('jobs:edit-plan', jobId, feedback),
-  jobsAcceptPlan: (jobId) => ipcRenderer.invoke('jobs:accept-plan', jobId),
   jobsGetDiff: (jobId) => ipcRenderer.invoke('jobs:get-diff', jobId),
   jobsRejectJob: (jobId, snapshotIndex) => ipcRenderer.invoke('jobs:reject-job', jobId, snapshotIndex),
   jobsFollowUp: (jobId, prompt) => ipcRenderer.invoke('jobs:follow-up', jobId, prompt),

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { useKanbanStore } from '../hooks/useKanbanStore';
 import { NotificationBadge } from './NotificationBadge';
 import { formatDuration, useNow } from '../utils/duration';
-import type { Job, KanbanColumn, JobStatus, FollowUp } from '../types/index';
+import type { Job, JobStatus, FollowUp } from '../types/index';
 import { MODEL_CATALOG, EFFORT_CATALOG, getProjectColor } from '../types/index';
 import { BrainIcon } from './Icons';
 
@@ -13,20 +13,16 @@ interface JobCardProps {
 const statusLabels: Record<JobStatus, string> = {
   'running': 'Running',
   'waiting-input': 'Needs Input',
-  'plan-ready': 'Plan Ready',
   'completed': 'Done',
   'error': 'Error',
-  'accepted': 'Accepted',
   'rejected': 'Rejected',
 };
 
 const statusColors: Record<JobStatus, string> = {
   'running': 'text-status-running',
   'waiting-input': 'text-status-waiting',
-  'plan-ready': 'text-status-plan-ready',
   'completed': 'text-status-completed',
   'error': 'text-status-error',
-  'accepted': 'text-status-completed',
   'rejected': 'text-status-error',
 };
 
@@ -55,7 +51,7 @@ export const JobCard = memo(function JobCard({ job }: JobCardProps) {
   }, [job.prompt, job.title, expanded]);
 
   const isSelected = selectedJobId === job.id;
-  const needsAttention = job.status === 'waiting-input' || job.status === 'plan-ready';
+  const needsAttention = job.status === 'waiting-input';
 
   const handleClick = useCallback(() => {
     selectJob(isSelected ? null : job.id);
