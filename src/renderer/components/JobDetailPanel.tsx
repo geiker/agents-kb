@@ -642,22 +642,25 @@ function PromptTimeline({
           {followUps!.map((f, i) => {
             const isLast = i === followUps!.length - 1;
             const isCurrent = isLast && isActive;
+            const isRolledBack = !!f.rolledBack;
             // Snapshot index is i+1 because index 0 is the original task
             const snapshot = canRollback && snapshots[i + 1] ? snapshots[i + 1] : null;
 
             return (
-              <div key={i} className="flex items-center gap-1.5 group/step">
+              <div key={i} className={`flex items-center gap-1.5 group/step ${isRolledBack ? 'opacity-50' : ''}`}>
                 {isCurrent ? (
                   <svg width="12" height="12" viewBox="0 0 16 16" className="shrink-0 animate-spin text-content-tertiary">
                     <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray="28 10" strokeLinecap="round" />
                   </svg>
+                ) : isRolledBack ? (
+                  <span className="text-semantic-error/60 shrink-0 text-xs w-[12px] text-center">×</span>
                 ) : (
                   <span className="text-content-tertiary/60 shrink-0 text-xs w-[12px] text-center">+</span>
                 )}
-                <span className={`text-xs leading-snug truncate min-w-0 flex-1 ${isCurrent ? 'font-medium text-content-primary' : 'text-content-secondary'}`}>
+                <span className={`text-xs leading-snug truncate min-w-0 flex-1 ${isRolledBack ? 'line-through text-content-tertiary' : isCurrent ? 'font-medium text-content-primary' : 'text-content-secondary'}`}>
                   {f.title || f.prompt}
                 </span>
-                {snapshot && onRollback && (
+                {!isRolledBack && snapshot && onRollback && (
                   <button
                     onClick={() => onRollback(i + 1)}
                     className="shrink-0 p-1 rounded text-content-tertiary/40 hover:text-semantic-error hover:bg-semantic-error-bg/10 opacity-0 group-hover/step:opacity-100 transition-all"

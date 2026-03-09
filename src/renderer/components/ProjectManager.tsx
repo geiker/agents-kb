@@ -588,7 +588,11 @@ export function ProjectManager() {
       <div
         className="h-12 shrink-0 flex items-center px-4 border-b border-chrome-subtle/70"
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-      />
+      >
+        <h1 className="text-xs font-bold tracking-[0.15em] text-content-secondary uppercase ml-auto">
+          Agent Kanban
+        </h1>
+      </div>
 
       <div className="flex items-center justify-between px-4 py-3">
         <span className="text-xs font-semibold uppercase tracking-wider text-content-tertiary">

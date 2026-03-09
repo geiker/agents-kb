@@ -155,6 +155,7 @@ export interface JobStepSnapshot {
   appliedSeq: number;
   gitSnapshotIndex?: number;
   files: JobFileSnapshot[];
+  rejectedAt?: string;
 }
 
 export const PROJECT_COLORS = [
@@ -220,6 +221,7 @@ export interface FollowUp {
   prompt: string;
   timestamp: string;
   title?: string;
+  rolledBack?: boolean;
 }
 
 export interface Job {

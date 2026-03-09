@@ -297,11 +297,37 @@ function fallbackExtraCommitItem(): string {
   return 'chore: update additional branch changes';
 }
 
-function buildPerJobCommitPrompt(config: PromptConfig, diffText: string): string {
+function buildJobContext(job: Job): string {
+  const sections = [
+    `Primary task: ${job.title || job.prompt}`,
+  ];
+
+  if (job.followUps?.length) {
+    sections.push(
+      'Follow-ups:',
+      ...job.followUps.map((followUp, index) => `- ${index + 1}. ${followUp.title || followUp.prompt}`),
+    );
+  }
+
+  if (job.stepSnapshots?.length) {
+    sections.push(
+      'Development steps:',
+      ...job.stepSnapshots.map((step) => `- ${step.label}`),
+    );
+  }
+
+  return sections.join('\n');
+}
+
+function buildPerJobCommitPrompt(config: PromptConfig, job: Job, diffText: string): string {
   return [
     config.prompt,
-    'Summarize ONLY the job diff below as a single concise conventional-commit line.',
+    'Summarize the ENTIRE job below as a single concise conventional-commit line.',
+    'Use the full job context and the cumulative diff, not just the latest follow-up or last step.',
     'Output exactly one line with no bullet prefix, no numbering, and no surrounding quotes.',
+    '',
+    'JOB CONTEXT:',
+    buildJobContext(job),
     '',
     'JOB DIFF:',
     diffText || '[no diff available]',
@@ -330,9 +356,10 @@ function buildCommitSubjectPrompt(config: PromptConfig, items: string[]): string
   ].join('\n');
 }
 
-function buildCommitMessage(subject: string, items: string[]): string {
+function buildCommitMessage(subject: string, items: string[], options?: { omitSingleItemBody?: boolean }): string {
   const cleanSubject = sanitizeCommitLine(subject) || fallbackCommitSubject();
   const cleanItems = items.map((item) => sanitizeCommitLine(item)).filter(Boolean);
+  if (options?.omitSingleItemBody && cleanItems.length === 1) return cleanSubject;
   if (cleanItems.length === 0) return cleanSubject;
   return `${cleanSubject}\n\n${cleanItems.map((item) => `- ${item}`).join('\n')}`;
 }
@@ -368,7 +395,7 @@ async function getOrderedCompletedJobsForBranch(project: Project, branch: string
     if (!message) {
       diffText = diffText || await buildStableJobDiff(project.path, job, job.stepSnapshots);
       try {
-        message = await generateJobCommitMessage(project.path, diffText);
+        message = await generateJobCommitMessage(project.path, job, diffText);
       } catch {
         message = fallbackCommitItem();
       }
@@ -417,14 +444,14 @@ async function buildStableJobDiff(projectPath: string, job: Job, stepSnapshots?:
   return '';
 }
 
-async function generateJobCommitMessage(projectPath: string, diffText: string): Promise<string> {
+async function generateJobCommitMessage(projectPath: string, job: Job, diffText: string): Promise<string> {
   const normalizedDiff = diffText.trim();
   if (!normalizedDiff) return fallbackCommitItem();
 
   const config = getPromptConfig('commit');
   const raw = await runClaudePrint(
     projectPath,
-    buildPerJobCommitPrompt(config, normalizedDiff),
+    buildPerJobCommitPrompt(config, job, normalizedDiff),
     { model: config.model, effort: config.effort },
   );
   return sanitizeCommitLine(raw) || fallbackCommitItem();
@@ -539,10 +566,11 @@ async function computeBranchCommitMessage(project: Project, branch: string, inpu
     : [];
   const items = [...resolvedInputs.perJobItems, ...extraItems];
   const subject = await generateCombinedCommitSubject(project.path, items);
+  const omitSingleItemBody = resolvedInputs.perJobItems.length === 1 && extraItems.length === 0;
 
   return {
     fingerprint: resolvedInputs.fingerprint,
-    message: buildCommitMessage(subject, items),
+    message: buildCommitMessage(subject, items, { omitSingleItemBody }),
   };
 }
 
@@ -731,7 +759,7 @@ async function startClaudeSession(job: Job, getWindow: WindowGetter, batchedSend
 
         void (async () => {
           try {
-            const commitMessage = await generateJobCommitMessage(project.path, diffText);
+            const commitMessage = await generateJobCommitMessage(project.path, updated, diffText);
             const refreshed = updateJob(job.id, { generatedCommitMessage: commitMessage });
             if (refreshed) {
               sendToRenderer(getWindow, 'job:status-changed', refreshed);
@@ -1640,16 +1668,43 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
       await cleanupAllSnapshots(project.path, snapshots);
     }
 
-    const updated = updateJob(jobId, {
-      status: 'rejected',
-      rejectedAt: new Date().toISOString(),
-      gitSnapshots: undefined,
-    });
-    if (updated) {
-      if (job.branch) {
-        invalidateCommitMessageCache(job.projectId, job.branch);
+    const isFullRejection = targetIndex === 0;
+
+    if (isFullRejection) {
+      // Full rejection: mark the entire job as rejected
+      const updated = updateJob(jobId, {
+        status: 'rejected',
+        rejectedAt: new Date().toISOString(),
+        gitSnapshots: undefined,
+      });
+      if (updated) {
+        if (job.branch) {
+          invalidateCommitMessageCache(job.projectId, job.branch);
+        }
+        sendToRenderer(getWindow, 'job:status-changed', updated);
       }
-      sendToRenderer(getWindow, 'job:status-changed', updated);
+    } else {
+      // Partial rollback: only mark rolled-back steps as rejected, job stays completed
+      const now = new Date().toISOString();
+      const updatedStepSnapshots = stepSnapshots.map(s =>
+        s.order >= targetIndex ? { ...s, rejectedAt: now } : s
+      );
+      const updatedFollowUps = (job.followUps || []).map((f, i) => {
+        // Follow-up at index i corresponds to step order i+1
+        const stepOrder = i + 1;
+        return stepOrder >= targetIndex ? { ...f, rolledBack: true } : f;
+      });
+      const updated = updateJob(jobId, {
+        stepSnapshots: updatedStepSnapshots,
+        followUps: updatedFollowUps,
+        gitSnapshots: undefined,
+      });
+      if (updated) {
+        if (job.branch) {
+          invalidateCommitMessageCache(job.projectId, job.branch);
+        }
+        sendToRenderer(getWindow, 'job:status-changed', updated);
+      }
     }
   });
 }
