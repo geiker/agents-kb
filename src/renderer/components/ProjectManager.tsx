@@ -6,6 +6,7 @@ import { ClaudeMdEditor } from './ClaudeMdEditor';
 import { Kbd } from './Kbd';
 import type { KanbanColumn, Project } from '../types/index';
 import { PROJECT_COLORS, getProjectColor } from '../types/index';
+import { NotificationBadge } from './NotificationBadge';
 
 interface BranchStatus {
   name: string;
@@ -123,9 +124,8 @@ function ProjectDetailDialog({
       {/* Dialog */}
       <div
         ref={dialogRef}
-        className={`relative rounded-xl border border-chrome/50 bg-surface-elevated shadow-2xl shadow-surface-overlay/20 overflow-hidden animate-[dialogIn_150ms_ease-out] transition-[width] duration-200 ease-out flex flex-col ${
-          isClaudeMdTab ? 'w-[560px] h-[480px]' : 'w-80'
-        }`}
+        className={`relative rounded-xl border border-chrome/50 bg-surface-elevated shadow-2xl shadow-surface-overlay/20 overflow-hidden animate-[dialogIn_150ms_ease-out] transition-[width] duration-200 ease-out flex flex-col ${isClaudeMdTab ? 'w-[560px] h-[480px]' : 'w-80'
+          }`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Close button */}
@@ -172,11 +172,10 @@ function ProjectDetailDialog({
         <div className="flex items-center gap-0 px-4 shrink-0">
           <button
             onClick={() => setActiveTab('details')}
-            className={`relative px-3 py-2 text-[11px] font-medium transition-colors ${
-              activeTab === 'details'
+            className={`relative px-3 py-2 text-[11px] font-medium transition-colors ${activeTab === 'details'
                 ? 'text-content-primary'
                 : 'text-content-tertiary hover:text-content-secondary'
-            }`}
+              }`}
           >
             Details
             {activeTab === 'details' && (
@@ -185,11 +184,10 @@ function ProjectDetailDialog({
           </button>
           <button
             onClick={() => setActiveTab('claude-md')}
-            className={`relative px-3 py-2 text-[11px] font-medium font-mono transition-colors ${
-              activeTab === 'claude-md'
+            className={`relative px-3 py-2 text-[11px] font-medium font-mono transition-colors ${activeTab === 'claude-md'
                 ? 'text-content-primary'
                 : 'text-content-tertiary hover:text-content-secondary'
-            }`}
+              }`}
           >
             CLAUDE.md
             {activeTab === 'claude-md' && (
@@ -282,11 +280,10 @@ function ProjectDetailDialog({
                       <button
                         key={c.id}
                         onClick={() => onSetColor(c.id === PROJECT_COLORS[0].id ? null : c.id)}
-                        className={`w-5 h-5 rounded-full transition-all duration-150 ${
-                          isActive
+                        className={`w-5 h-5 rounded-full transition-all duration-150 ${isActive
                             ? 'ring-2 ring-offset-1 ring-offset-surface-elevated scale-110'
                             : 'hover:scale-110'
-                        }`}
+                          }`}
                         style={{
                           backgroundColor: c.hex,
                           ...(isActive ? { ringColor: c.hex } as React.CSSProperties : {}),
@@ -652,7 +649,7 @@ export function ProjectManager() {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-2">
+      <div className="flex-1 overflow-y-auto px-2 flex flex-col gap-0.5">
         {projects.length === 0 && (
           <p className="text-xs text-content-tertiary px-2 py-4 text-center">
             No projects yet. Add a folder to get started.
@@ -665,154 +662,113 @@ export function ProjectManager() {
           const totalJobs = stats ? stats.counts.planning + stats.counts.development + stats.counts.done : 0;
           const isDetailOpen = detailProjectId === project.id;
           const branches = branchStatuses.get(project.id) || [];
-          const hasSecondaryInfo = totalJobs > 0 || branches.length > 0;
           return (
             <div
               key={project.id}
-              className="relative"
+              draggable
+              onDragStart={(e) => handleDragStart(e, project.id)}
+              onDragEnd={handleDragEnd}
+              onDragOver={(e) => handleDragOver(e, project.id)}
+              onDragLeave={() => { if (dragOverId === project.id) { setDragOverId(null); setDragOverPosition(null); } }}
+              onDrop={(e) => handleDrop(e, project.id)}
+              onClick={() => selectProject(project.id)}
+              className={`group rounded-lg cursor-grab active:cursor-grabbing transition-all duration-150 px-2.5 py-2 ${isSelected
+                  ? 'bg-selected-bg/80'
+                  : 'hover:bg-surface-tertiary/60'
+                } ${isDragOver && dragOverPosition === 'above' ? 'ring-t-2 ring-active-indicator' : ''}
+                ${isDragOver && dragOverPosition === 'below' ? 'ring-b-2 ring-active-indicator' : ''}`}
             >
-              <div
-                draggable
-                onDragStart={(e) => handleDragStart(e, project.id)}
-                onDragEnd={handleDragEnd}
-                onDragOver={(e) => handleDragOver(e, project.id)}
-                onDragLeave={() => { if (dragOverId === project.id) { setDragOverId(null); setDragOverPosition(null); } }}
-                onDrop={(e) => handleDrop(e, project.id)}
-                onClick={() => selectProject(project.id)}
-                className={`group relative flex items-stretch rounded-lg cursor-pointer transition-all duration-150 ${
-                  isSelected
-                    ? 'bg-selected-bg/80 border border-selected-border/30 shadow-sm'
-                    : 'border border-transparent hover:bg-surface-tertiary/60'
-                } ${isDragOver && dragOverPosition === 'above' ? 'border-t-2 !border-t-active-indicator' : ''}
-                  ${isDragOver && dragOverPosition === 'below' ? 'border-b-2 !border-b-active-indicator' : ''}`}
-              >
-                {/* Left edge: accent bar (selected) / drag grip zone */}
-                <div className="relative w-5 shrink-0 flex items-center justify-center cursor-grab active:cursor-grabbing">
-                  {isSelected && (
-                    <div className="absolute left-0.5 top-1/2 -translate-y-1/2 w-[3px] h-3/5 rounded-full bg-active-indicator" />
-                  )}
-                  <div className="opacity-0 group-hover:opacity-50 transition-opacity text-content-tertiary">
-                    <svg width="6" height="10" viewBox="0 0 6 10" fill="currentColor">
-                      <circle cx="1.5" cy="1.5" r="1" />
-                      <circle cx="4.5" cy="1.5" r="1" />
-                      <circle cx="1.5" cy="5" r="1" />
-                      <circle cx="4.5" cy="5" r="1" />
-                      <circle cx="1.5" cy="8.5" r="1" />
-                      <circle cx="4.5" cy="8.5" r="1" />
-                    </svg>
-                  </div>
-                </div>
-
-                {/* Main content area */}
-                <div className={`flex-1 min-w-0 pr-1.5 ${branches.length > 0 ? 'py-1.5' : 'py-2'}`}>
-                  {/* Primary row: name + info icon + notification */}
-                  <div className="flex items-center gap-1">
-                    <span
-                      className="inline-block w-2 h-2 rounded-full shrink-0"
-                      style={{ backgroundColor: getProjectColor(project.color) }}
-                    />
-                    <span className={`text-[13px] font-medium truncate transition-colors ${
-                      isSelected ? 'text-content-primary' : ''
-                    }`}>
-                      {project.name}
-                    </span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDetailProjectId(isDetailOpen ? null : project.id);
-                      }}
-                      className={`p-0.5 rounded flex items-center justify-center transition-all shrink-0 ${
-                        isDetailOpen
-                          ? 'opacity-100 text-content-secondary bg-surface-tertiary/70'
-                          : 'opacity-0 group-hover:opacity-100 text-content-tertiary hover:text-content-secondary hover:bg-surface-tertiary/50'
-                      }`}
-                      title="Project details"
-                      aria-label="Project details"
-                    >
-                      <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="7" cy="7" r="5.5" />
-                        <path d="M7 6.2V10" />
-                        <circle cx="7" cy="4.3" r="0.01" strokeWidth="2" />
-                      </svg>
-                    </button>
-                    {stats?.hasNotification && (
-                      <span className="relative flex h-1.5 w-1.5 shrink-0">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-semantic-notification opacity-60" />
-                        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-semantic-notification" />
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Tertiary row: git branch chips */}
-                  {branches.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {branches.map((b) => {
-                        const canPush = b.ahead > 0;
-                        const chipTitle = [
-                          b.name,
-                          b.dirtyFiles > 0 ? `${b.dirtyFiles} uncommitted file${b.dirtyFiles > 1 ? 's' : ''}` : '',
-                          canPush ? `${b.ahead} commit${b.ahead > 1 ? 's' : ''} to push — click to push` : '',
-                        ].filter(Boolean).join(' · ');
-
-                        const isActionable = canPush || b.dirtyFiles > 0;
-
-                        return (
-                          <button
-                            key={b.name}
-                            onClick={(e: React.MouseEvent) => {
-                              e.stopPropagation();
-                              if (b.dirtyFiles > 0) {
-                                openCommitDialog(project.id, b.name);
-                              } else if (canPush) {
-                                setPushConfirm({ projectId: project.id, branch: b.name });
-                              }
-                            }}
-                            title={chipTitle}
-                            className={`inline-flex items-center gap-0.5 px-1.5 py-px rounded border text-[9px] font-medium transition-colors ${
-                              canPush
-                                ? 'border-column-development/30 bg-column-development/10 text-column-development hover:bg-column-development/20 hover:border-column-development/50 cursor-pointer'
-                                : isActionable
-                                  ? 'border-semantic-warning/30 bg-semantic-warning/10 text-semantic-warning hover:bg-semantic-warning/20 hover:border-semantic-warning/50 cursor-pointer'
-                                  : 'border-semantic-warning/30 bg-semantic-warning/10 text-semantic-warning'
-                            }`}
-                          >
-                            <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-                              <circle cx="5" cy="4" r="2" />
-                              <circle cx="5" cy="12" r="2" />
-                              <circle cx="12" cy="6" r="2" />
-                              <path d="M5 6v4M10.2 7.2C9 8.5 7 9 5 9" />
-                            </svg>
-                            <span className="truncate max-w-[56px]">{b.name}</span>
-                            {b.dirtyFiles > 0 && (
-                              <span className="tabular-nums opacity-80">±{b.dirtyFiles}</span>
-                            )}
-                            {canPush && (
-                              <span className="tabular-nums">{b.ahead}&#8593;</span>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                {/* Right side: job counters */}
-                {totalJobs > 0 && (
-                  <div className="shrink-0 flex items-center gap-1.5 pr-2">
-                    {COLUMN_ORDER.map((col) => {
-                      const count = stats!.counts[col];
-                      if (count === 0) return null;
-                      return (
-                        <span key={col} className="flex items-center gap-0.5">
-                          <span className={`inline-block w-1.5 h-1.5 rounded-full ${COLUMN_DOT_CLASSES[col]}`} />
-                          <span className="text-[10px] tabular-nums text-content-tertiary leading-none">{count}</span>
-                        </span>
-                      );
-                    })}
-                  </div>
-                )}
+              {/* Primary row: name + info + notification */}
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span
+                  className="inline-block w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: getProjectColor(project.color) }}
+                />
+                <span className={`text-[13px] font-medium truncate min-w-0 transition-colors ${isSelected ? 'text-content-primary' : ''
+                  }`}>
+                  {project.name}
+                </span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDetailProjectId(isDetailOpen ? null : project.id);
+                  }}
+                  className={`p-0.5 rounded flex items-center justify-center transition-all shrink-0 ${isDetailOpen
+                      ? 'opacity-100 text-content-secondary bg-surface-tertiary/70'
+                      : 'opacity-0 group-hover:opacity-100 text-content-tertiary hover:text-content-secondary hover:bg-surface-tertiary/50'
+                    }`}
+                  title="Project details"
+                  aria-label="Project details"
+                >
+                  <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="7" cy="7" r="5.5" />
+                    <path d="M7 6.2V10" />
+                    <circle cx="7" cy="4.3" r="0.01" strokeWidth="2" />
+                  </svg>
+                </button>
+                <span className="flex-1" />
+                {stats?.hasNotification && <NotificationBadge size="sm" />}
               </div>
 
+              {/* Job counters row */}
+              {totalJobs > 0 && (
+                <div className="flex items-center gap-1.5 mt-1.5 pl-[22px]">
+                  {COLUMN_ORDER.map((col) => {
+                    const count = stats!.counts[col];
+                    if (count === 0) return null;
+                    return (
+                      <span key={col} className="flex items-center gap-0.5">
+                        <span className={`inline-block w-1.5 h-1.5 rounded-full ${COLUMN_DOT_CLASSES[col]}`} />
+                        <span className="text-[10px] tabular-nums text-content-tertiary leading-none">{count}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Git branch row */}
+              {branches.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-1 pl-[22px]">
+                  {branches.map((b) => {
+                    const canPush = b.ahead > 0;
+                    const isActionable = canPush || b.dirtyFiles > 0;
+                    const chipTitle = [
+                      b.name,
+                      b.dirtyFiles > 0 ? `${b.dirtyFiles} uncommitted file${b.dirtyFiles > 1 ? 's' : ''}` : '',
+                      canPush ? `${b.ahead} commit${b.ahead > 1 ? 's' : ''} to push — click to push` : '',
+                    ].filter(Boolean).join(' · ');
+
+                    return (
+                      <button
+                        key={b.name}
+                        onClick={(e: React.MouseEvent) => {
+                          e.stopPropagation();
+                          if (b.dirtyFiles > 0) {
+                            openCommitDialog(project.id, b.name);
+                          } else if (canPush) {
+                            setPushConfirm({ projectId: project.id, branch: b.name });
+                          }
+                        }}
+                        title={chipTitle}
+                        className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium leading-tight transition-colors ${canPush
+                            ? 'bg-column-development/10 text-column-development hover:bg-column-development/20 cursor-pointer'
+                            : isActionable
+                              ? 'bg-semantic-warning/10 text-semantic-warning hover:bg-semantic-warning/20 cursor-pointer'
+                              : 'text-content-tertiary bg-surface-tertiary/40'
+                          }`}
+                      >
+                        <span className="truncate max-w-[72px]">{b.name}</span>
+                        {b.dirtyFiles > 0 && (
+                          <span className="tabular-nums opacity-80 ml-px">±{b.dirtyFiles}</span>
+                        )}
+                        {canPush && (
+                          <span className="tabular-nums ml-px">{b.ahead}&#8593;</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })}

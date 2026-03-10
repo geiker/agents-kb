@@ -26,6 +26,7 @@ import {
 import { sessionManager } from './session-manager';
 import { notifyInputNeeded, notifyJobComplete, notifyJobError, notifyPlanReady } from './notifications';
 import { checkCliHealth, spawnLogin } from './cli-health';
+import { isDemoMode, getDemoProjects, getDemoJobs, getDemoSettings, getDemoBranchStatuses } from './demo-loader';
 import { isGitRepoRoot, captureSnapshot, restoreSnapshot, cleanupAllSnapshots, getDiff, listBranches, checkoutBranch, gitStageAll, gitCommit, getBranchesStatus, gitPush, listChangedFiles, readHeadFileState } from './git-snapshot';
 import { listProjectFiles } from './file-list';
 import type { Job, OutputEntry, RawMessage, PendingQuestion, AppSettings, Project, ModelChoice, EffortLevel, PromptConfig } from '../shared/types';
@@ -1070,7 +1071,43 @@ async function generateTitleInBackground(
   }
 }
 
+function registerDemoHandlers(): void {
+  // Data handlers
+  ipcMain.handle('cli:check-health', () => ({ installed: true, authenticated: true, version: '1.0.0 (demo)' }));
+  ipcMain.handle('projects:list', () => getDemoProjects());
+  ipcMain.handle('jobs:list', () => getDemoJobs());
+  ipcMain.handle('settings:get', () => getDemoSettings());
+  ipcMain.handle('theme:get-actual', () => (nativeTheme.shouldUseDarkColors ? 'dark' : 'light'));
+  ipcMain.handle('git:branches-status', (_event, projectId: string) => getDemoBranchStatuses(projectId));
+
+  // Mutation channels — all no-ops
+  const noOpChannels = [
+    'projects:add', 'projects:rename', 'projects:remove', 'projects:reorder',
+    'projects:set-default-branch', 'projects:set-color', 'projects:open-folder', 'projects:open-in-editor',
+    'git:list-branches', 'git:push', 'git:commit', 'git:generate-commit-message',
+    'files:list',
+    'jobs:create', 'jobs:cancel', 'jobs:delete', 'jobs:retry', 'jobs:respond', 'jobs:steer',
+    'jobs:accept-plan', 'jobs:edit-plan', 'jobs:follow-up', 'jobs:get-diff', 'jobs:reject-job',
+    'images:save',
+    'claudemd:read', 'claudemd:init', 'claudemd:write',
+    'cli:start-login', 'cli:login-write', 'cli:login-kill',
+    'shell:open-external',
+    'settings:update',
+  ];
+  for (const channel of noOpChannels) {
+    ipcMain.handle(channel, () => null);
+  }
+
+  console.log('[Demo Mode] Registered demo IPC handlers — all mutations are no-ops');
+}
+
 export function registerIpcHandlers(getWindow: WindowGetter): void {
+  // --- Demo mode: register lightweight canned-data handlers and skip real registration ---
+  if (isDemoMode()) {
+    registerDemoHandlers();
+    return;
+  }
+
   const batchedSender = new BatchedSender(getWindow);
   batchedSender.start();
 

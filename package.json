@@ -5,6 +5,7 @@
   "main": ".vite/build/main.js",
   "scripts": {
     "start": "electron-forge start",
+    "demo": "DEMO_MODE=true electron-forge start",
     "package": "electron-forge package",
     "make": "electron-forge make"
   },

@@ -1,0 +1,319 @@
+{
+  "projects": [
+    {
+      "id": "demo-proj-agents-kb",
+      "name": "agents-kb",
+      "path": "/Users/demo/projects/agents-kb",
+      "addedAt": "2026-02-15T10:00:00.000Z",
+      "isGitRepo": true,
+      "color": "blue"
+    },
+    {
+      "id": "demo-proj-billing-api",
+      "name": "billing-api",
+      "path": "/Users/demo/projects/billing-api",
+      "addedAt": "2026-02-20T14:30:00.000Z",
+      "isGitRepo": true,
+      "color": "emerald"
+    },
+    {
+      "id": "demo-proj-marketing-site",
+      "name": "marketing-site",
+      "path": "/Users/demo/projects/marketing-site",
+      "addedAt": "2026-03-01T09:00:00.000Z",
+      "isGitRepo": true,
+      "color": "pink"
+    },
+    {
+      "id": "demo-proj-ml-pipeline",
+      "name": "ml-pipeline",
+      "path": "/Users/demo/projects/ml-pipeline",
+      "addedAt": "2026-03-05T16:45:00.000Z",
+      "isGitRepo": true,
+      "color": "amber"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "demo-job-01",
+      "projectId": "demo-proj-agents-kb",
+      "prompt": "Add a dark mode toggle to the settings panel. Should respect system preference by default but allow manual override. Store preference in electron-store.",
+      "title": "Dark mode toggle for settings",
+      "column": "planning",
+      "status": "running",
+      "branch": "dev",
+      "createdAt": "2026-03-10T08:15:00.000Z",
+      "_planningStartedAgoMs": 45000,
+      "model": "opus",
+      "effort": "high",
+      "planningTokens": { "inputTokens": 12400, "outputTokens": 3200 },
+      "outputLog": [
+        { "timestamp": "2026-03-10T09:00:00.000Z", "type": "thinking", "content": "Let me analyze the current theme system to understand how dark mode is implemented..." },
+        { "timestamp": "2026-03-10T09:00:02.000Z", "type": "tool-use", "content": "Reading src/renderer/index.css", "toolName": "Read" },
+        { "timestamp": "2026-03-10T09:00:03.000Z", "type": "text", "content": "I can see the app already has CSS custom properties for light and dark themes. I need to add a toggle in the settings panel that allows users to switch between system, light, and dark modes." }
+      ],
+      "rawMessages": [],
+      "followUps": []
+    },
+    {
+      "id": "demo-job-02",
+      "projectId": "demo-proj-billing-api",
+      "prompt": "Implement a Stripe webhook handler for subscription lifecycle events (created, updated, deleted, payment_failed). Include signature verification and idempotency.",
+      "title": "Stripe webhook handler",
+      "column": "planning",
+      "status": "plan-ready",
+      "branch": "main",
+      "createdAt": "2026-03-10T07:30:00.000Z",
+      "planningStartedAt": "2026-03-10T07:30:05.000Z",
+      "planningEndedAt": "2026-03-10T07:35:12.000Z",
+      "planningElapsedMs": 307000,
+      "model": "sonnet",
+      "effort": "default",
+      "planningTokens": { "inputTokens": 18500, "outputTokens": 6800 },
+      "planText": "## Plan: Stripe Webhook Handler\n\n### Files to create\n1. `src/webhooks/stripe-handler.ts` — Main webhook route handler\n2. `src/webhooks/stripe-events.ts` — Event-specific processors\n3. `src/webhooks/stripe-verify.ts` — Signature verification middleware\n4. `src/migrations/add-webhook-events-table.sql` — Idempotency tracking\n\n### Files to modify\n1. `src/routes/index.ts` — Register webhook route\n2. `src/config.ts` — Add Stripe webhook secret env var\n\n### Approach\n- Verify webhook signatures using `stripe.webhooks.constructEvent()`\n- Store processed event IDs in a `webhook_events` table for idempotency\n- Handle: `customer.subscription.created`, `.updated`, `.deleted`, `invoice.payment_failed`\n- Use database transactions to ensure atomicity\n- Return 200 quickly, process async where possible",
+      "outputLog": [
+        { "timestamp": "2026-03-10T07:30:10.000Z", "type": "thinking", "content": "I need to design a robust Stripe webhook handler. Let me review the existing codebase structure..." },
+        { "timestamp": "2026-03-10T07:32:00.000Z", "type": "text", "content": "I've analyzed the codebase and here's my plan for implementing the Stripe webhook handler..." }
+      ],
+      "rawMessages": [],
+      "followUps": []
+    },
+    {
+      "id": "demo-job-03",
+      "projectId": "demo-proj-ml-pipeline",
+      "prompt": "Set up GPU training pipeline with distributed data parallel (DDP) support. Include config for multi-node training, checkpoint management, and W&B logging integration.",
+      "title": "GPU training pipeline setup",
+      "column": "planning",
+      "status": "waiting-input",
+      "branch": "main",
+      "createdAt": "2026-03-10T06:00:00.000Z",
+      "planningStartedAt": "2026-03-10T06:00:05.000Z",
+      "model": "opus",
+      "effort": "high",
+      "planningTokens": { "inputTokens": 22100, "outputTokens": 4500 },
+      "pendingQuestion": {
+        "questionId": "demo-q-01",
+        "text": "I see you have both PyTorch Lightning and plain PyTorch in your dependencies. Which framework should I use for the training loop? Also, should I support both single-GPU and multi-GPU from the start, or focus on multi-GPU only?",
+        "timestamp": "2026-03-10T06:05:30.000Z"
+      },
+      "waitingStartedAt": "2026-03-10T06:05:30.000Z",
+      "outputLog": [
+        { "timestamp": "2026-03-10T06:00:10.000Z", "type": "thinking", "content": "Setting up a GPU training pipeline requires careful consideration of the distributed training strategy..." },
+        { "timestamp": "2026-03-10T06:02:00.000Z", "type": "tool-use", "content": "Reading requirements.txt", "toolName": "Read" },
+        { "timestamp": "2026-03-10T06:03:00.000Z", "type": "text", "content": "I found both PyTorch Lightning and plain PyTorch in the dependencies. I need to clarify the preferred approach." }
+      ],
+      "rawMessages": [],
+      "followUps": []
+    },
+    {
+      "id": "demo-job-04",
+      "projectId": "demo-proj-marketing-site",
+      "prompt": "Redesign the hero section with a modern gradient background, animated text reveal, and a responsive layout. Include a CTA button with hover animation.",
+      "title": "Hero section redesign",
+      "column": "development",
+      "status": "running",
+      "branch": "dev",
+      "createdAt": "2026-03-10T05:00:00.000Z",
+      "planningStartedAt": "2026-03-10T05:00:05.000Z",
+      "planningEndedAt": "2026-03-10T05:08:00.000Z",
+      "planningElapsedMs": 475000,
+      "_developmentStartedAgoMs": 180000,
+      "model": "sonnet",
+      "effort": "default",
+      "planningTokens": { "inputTokens": 15200, "outputTokens": 5100 },
+      "developmentTokens": { "inputTokens": 34800, "outputTokens": 12600 },
+      "planText": "## Plan: Hero Section Redesign\n\n### Changes\n1. Replace static background with animated gradient using CSS `@keyframes`\n2. Add text reveal animation using Framer Motion\n3. Implement responsive breakpoints (mobile-first)\n4. Create CTA button with scale + glow hover effect\n5. Add subtle parallax scroll effect on background elements",
+      "outputLog": [
+        { "timestamp": "2026-03-10T09:00:00.000Z", "type": "tool-use", "content": "Writing src/components/Hero.tsx", "toolName": "Write" },
+        { "timestamp": "2026-03-10T09:00:05.000Z", "type": "text", "content": "Creating the hero component with gradient background and animated text reveal..." }
+      ],
+      "rawMessages": [],
+      "followUps": [
+        { "prompt": "Make the gradient colors match our brand palette from the design system", "timestamp": "2026-03-10T08:30:00.000Z", "title": "Match brand palette" }
+      ]
+    },
+    {
+      "id": "demo-job-05",
+      "projectId": "demo-proj-agents-kb",
+      "prompt": "Implement drag-and-drop reordering for jobs within kanban columns. Use @dnd-kit for accessible drag interactions.",
+      "title": "Drag-and-drop reordering",
+      "column": "development",
+      "status": "running",
+      "branch": "dev",
+      "createdAt": "2026-03-10T04:30:00.000Z",
+      "planningStartedAt": "2026-03-10T04:30:05.000Z",
+      "planningEndedAt": "2026-03-10T04:38:00.000Z",
+      "planningElapsedMs": 475000,
+      "_developmentStartedAgoMs": 95000,
+      "model": "default",
+      "effort": "default",
+      "planningTokens": { "inputTokens": 11300, "outputTokens": 4100 },
+      "developmentTokens": { "inputTokens": 28400, "outputTokens": 9800 },
+      "planText": "## Plan: Drag-and-Drop Reordering\n\n### Approach\n- Install `@dnd-kit/core` and `@dnd-kit/sortable`\n- Wrap each column in a `SortableContext`\n- Make job cards draggable with grab handles\n- Persist order to electron-store on drop\n- Add visual feedback during drag (opacity, shadow)",
+      "outputLog": [
+        { "timestamp": "2026-03-10T09:00:00.000Z", "type": "tool-use", "content": "Editing src/renderer/components/KanbanColumn.tsx", "toolName": "Edit" },
+        { "timestamp": "2026-03-10T09:00:03.000Z", "type": "text", "content": "Adding sortable wrapper around job cards with drag handles..." }
+      ],
+      "rawMessages": [],
+      "followUps": []
+    },
+    {
+      "id": "demo-job-06",
+      "projectId": "demo-proj-billing-api",
+      "prompt": "Generate PDF invoices from billing data. Use @react-pdf/renderer for template, include company logo, line items, tax calculations, and payment status.",
+      "title": "PDF invoice generation",
+      "column": "development",
+      "status": "waiting-input",
+      "branch": "main",
+      "createdAt": "2026-03-10T03:00:00.000Z",
+      "planningStartedAt": "2026-03-10T03:00:05.000Z",
+      "planningEndedAt": "2026-03-10T03:06:00.000Z",
+      "planningElapsedMs": 355000,
+      "developmentStartedAt": "2026-03-10T03:06:05.000Z",
+      "model": "sonnet",
+      "effort": "medium",
+      "planningTokens": { "inputTokens": 14200, "outputTokens": 4900 },
+      "developmentTokens": { "inputTokens": 41200, "outputTokens": 15300 },
+      "planText": "## Plan: PDF Invoice Generation\n\n### Files to create\n1. `src/invoices/pdf-template.tsx` — React PDF template component\n2. `src/invoices/generate.ts` — PDF generation service\n3. `src/invoices/types.ts` — Invoice data types\n\n### Approach\n- Use @react-pdf/renderer for server-side PDF generation\n- Template includes: header with logo, billing details, line items table, tax summary, payment status badge\n- Support for multiple currencies via Intl.NumberFormat",
+      "pendingQuestion": {
+        "questionId": "demo-q-02",
+        "text": "The invoice template needs a company logo. I found `assets/logo.png` (200x60) and `assets/logo-dark.png` (200x60). Should I embed the light version for PDF invoices, or do you want to support both variants based on a setting?",
+        "timestamp": "2026-03-10T03:15:00.000Z"
+      },
+      "waitingStartedAt": "2026-03-10T03:15:00.000Z",
+      "outputLog": [
+        { "timestamp": "2026-03-10T03:06:10.000Z", "type": "tool-use", "content": "Writing src/invoices/pdf-template.tsx", "toolName": "Write" },
+        { "timestamp": "2026-03-10T03:10:00.000Z", "type": "text", "content": "Created the PDF template with header, line items table, and tax summary. Now I need to know about the logo..." }
+      ],
+      "rawMessages": [],
+      "followUps": [
+        { "prompt": "Add support for recurring invoice numbering with configurable prefix", "timestamp": "2026-03-10T03:12:00.000Z", "title": "Invoice numbering" }
+      ]
+    },
+    {
+      "id": "demo-job-07",
+      "projectId": "demo-proj-ml-pipeline",
+      "prompt": "Migrate dataset loading from CSV to Apache Arrow format for better memory efficiency. Update the DataLoader to use memory-mapped Arrow files.",
+      "title": "Arrow format migration",
+      "column": "development",
+      "status": "error",
+      "branch": "main",
+      "createdAt": "2026-03-10T02:00:00.000Z",
+      "planningStartedAt": "2026-03-10T02:00:05.000Z",
+      "planningEndedAt": "2026-03-10T02:04:00.000Z",
+      "planningElapsedMs": 235000,
+      "developmentStartedAt": "2026-03-10T02:04:05.000Z",
+      "model": "haiku",
+      "effort": "low",
+      "planningTokens": { "inputTokens": 8900, "outputTokens": 2800 },
+      "developmentTokens": { "inputTokens": 19600, "outputTokens": 7200 },
+      "error": "Process exited unexpectedly (exit code 1). The pyarrow package version 14.0.1 is incompatible with numpy 2.x. Please pin numpy<2.0 or upgrade pyarrow to >=15.0.",
+      "planText": "## Plan: Arrow Format Migration\n\n### Changes\n1. Replace pandas CSV reader with pyarrow dataset API\n2. Convert existing CSV files to .arrow format\n3. Update DataLoader to use memory-mapped reading\n4. Add Arrow schema validation on load",
+      "outputLog": [
+        { "timestamp": "2026-03-10T02:04:10.000Z", "type": "tool-use", "content": "Editing src/data/loader.py", "toolName": "Edit" },
+        { "timestamp": "2026-03-10T02:06:00.000Z", "type": "error", "content": "pyarrow 14.0.1 is incompatible with numpy 2.x" }
+      ],
+      "rawMessages": [],
+      "followUps": []
+    },
+    {
+      "id": "demo-job-08",
+      "projectId": "demo-proj-agents-kb",
+      "prompt": "Fix memory leak in WebSocket connection handler. Connections aren't being cleaned up on client disconnect, causing gradual memory growth.",
+      "title": "Fix WebSocket memory leak",
+      "column": "done",
+      "status": "completed",
+      "branch": "dev",
+      "createdAt": "2026-03-09T14:00:00.000Z",
+      "planningStartedAt": "2026-03-09T14:00:05.000Z",
+      "planningEndedAt": "2026-03-09T14:03:00.000Z",
+      "planningElapsedMs": 175000,
+      "developmentStartedAt": "2026-03-09T14:03:05.000Z",
+      "completedAt": "2026-03-09T14:12:00.000Z",
+      "developmentElapsedMs": 535000,
+      "model": "sonnet",
+      "effort": "default",
+      "planningTokens": { "inputTokens": 9800, "outputTokens": 3100 },
+      "developmentTokens": { "inputTokens": 24500, "outputTokens": 8400 },
+      "planText": "## Plan: Fix WebSocket Memory Leak\n\n### Root Cause\nThe `connectionMap` in `ws-handler.ts` stores references to closed connections. The `close` event listener removes the socket but not the associated metadata and message buffers.\n\n### Fix\n1. Clean up all references in the `close` handler\n2. Add a periodic sweep for stale connections\n3. Add connection count metric for monitoring",
+      "editedFiles": [
+        "src/main/ws-handler.ts",
+        "src/main/connection-pool.ts",
+        "src/main/metrics.ts"
+      ],
+      "outputLog": [],
+      "rawMessages": [],
+      "followUps": [
+        { "prompt": "Also add cleanup for the heartbeat interval timer on disconnect", "timestamp": "2026-03-09T14:08:00.000Z", "title": "Clean up heartbeat timer" },
+        { "prompt": "Add a unit test covering the connection cleanup path", "timestamp": "2026-03-09T14:10:00.000Z", "title": "Add cleanup unit test" }
+      ]
+    },
+    {
+      "id": "demo-job-09",
+      "projectId": "demo-proj-marketing-site",
+      "prompt": "Add comprehensive SEO meta tags and Open Graph markup to all pages. Include dynamic og:image generation for blog posts.",
+      "title": "SEO meta tags & Open Graph",
+      "column": "done",
+      "status": "completed",
+      "branch": "dev",
+      "createdAt": "2026-03-09T10:00:00.000Z",
+      "planningStartedAt": "2026-03-09T10:00:05.000Z",
+      "planningEndedAt": "2026-03-09T10:02:00.000Z",
+      "planningElapsedMs": 115000,
+      "developmentStartedAt": "2026-03-09T10:02:05.000Z",
+      "completedAt": "2026-03-09T10:08:00.000Z",
+      "developmentElapsedMs": 355000,
+      "model": "haiku",
+      "effort": "low",
+      "planningTokens": { "inputTokens": 7200, "outputTokens": 2100 },
+      "developmentTokens": { "inputTokens": 16800, "outputTokens": 5900 },
+      "editedFiles": [
+        "src/components/SEOHead.tsx",
+        "src/pages/_app.tsx",
+        "src/lib/og-image.ts",
+        "src/pages/api/og.tsx"
+      ],
+      "outputLog": [],
+      "rawMessages": [],
+      "followUps": [
+        { "prompt": "Add Twitter card meta tags alongside Open Graph", "timestamp": "2026-03-09T10:06:00.000Z", "title": "Twitter card tags" },
+        { "prompt": "Include JSON-LD structured data for blog posts", "timestamp": "2026-03-09T10:07:00.000Z", "title": "JSON-LD structured data" },
+        { "prompt": "Make og:image text truncate gracefully for long titles", "timestamp": "2026-03-09T10:07:30.000Z", "title": "Truncate long og:image titles" }
+      ]
+    },
+    {
+      "id": "demo-job-10",
+      "projectId": "demo-proj-billing-api",
+      "prompt": "Refactor authentication middleware to support both JWT and API key auth strategies. Extract into composable middleware chain with proper error responses.",
+      "title": "Auth middleware refactor",
+      "column": "done",
+      "status": "completed",
+      "branch": "main",
+      "createdAt": "2026-03-08T16:00:00.000Z",
+      "planningStartedAt": "2026-03-08T16:00:05.000Z",
+      "planningEndedAt": "2026-03-08T16:05:00.000Z",
+      "planningElapsedMs": 295000,
+      "developmentStartedAt": "2026-03-08T16:05:05.000Z",
+      "completedAt": "2026-03-08T16:18:00.000Z",
+      "developmentElapsedMs": 775000,
+      "model": "opus",
+      "effort": "default",
+      "planningTokens": { "inputTokens": 13600, "outputTokens": 5200 },
+      "developmentTokens": { "inputTokens": 38900, "outputTokens": 14100 },
+      "editedFiles": [
+        "src/middleware/auth.ts",
+        "src/middleware/jwt-strategy.ts",
+        "src/middleware/api-key-strategy.ts",
+        "src/middleware/compose.ts",
+        "src/routes/protected.ts",
+        "tests/middleware/auth.test.ts"
+      ],
+      "outputLog": [],
+      "rawMessages": [],
+      "followUps": [
+        { "prompt": "Add rate limiting per API key with configurable window", "timestamp": "2026-03-08T16:12:00.000Z", "title": "API key rate limiting" },
+        { "prompt": "Return proper WWW-Authenticate header on 401 responses", "timestamp": "2026-03-08T16:15:00.000Z", "title": "WWW-Authenticate header" }
+      ]
+    }
+  ]
+}

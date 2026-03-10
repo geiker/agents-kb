@@ -60,6 +60,7 @@
     --color-error-bg: 254 202 202;
     --color-error-bg-dark: 220 38 38;
     --color-notification: 251 146 60;
+    --color-attention: 59 130 246;
 
     /* Scrollbar */
     --color-scrollbar: 207 204 200;
@@ -141,6 +142,7 @@
       --color-error-bg: 127 29 29;
       --color-error-bg-dark: 127 29 29;
       --color-notification: 251 146 60;
+      --color-attention: 96 165 250;
 
       /* Scrollbar */
       --color-scrollbar: 68 64 60;

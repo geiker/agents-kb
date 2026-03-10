@@ -82,10 +82,7 @@ export const JobCard = memo(function JobCard({ job }: JobCardProps) {
           <div className="flex items-center gap-1.5 min-w-0">
             {project && (
               <span className="flex items-center gap-1 min-w-0">
-                <span
-                  className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
-                  style={{ backgroundColor: projectColor }}
-                />
+
                 <span className="text-[9px] font-semibold text-content-tertiary uppercase tracking-[0.08em] truncate">
                   {project.name}
                 </span>
@@ -104,13 +101,13 @@ export const JobCard = memo(function JobCard({ job }: JobCardProps) {
             )}
           </div>
           <div className="flex items-center gap-1.5 ml-auto">
-            {job.status === 'running' && (
+            {/* {job.status === 'running' && (
               <span className="relative flex h-1.5 w-1.5">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-active-ping opacity-75" />
                 <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-active-indicator" />
               </span>
-            )}
-            <span className={`text-[10px] font-semibold uppercase tracking-wide ${statusColors[job.status]}`}>
+            )} */}
+            <span className={`text-[10px] font-semibold uppercase tracking-wide ${job.status === "running" ? "animate-pulse" : ""} ${statusColors[job.status]}`}>
               {statusLabels[job.status]}
             </span>
             {needsAttention && <NotificationBadge />}

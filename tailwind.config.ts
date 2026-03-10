@@ -81,6 +81,7 @@ const config: Config = {
           'error-bg': cssVar('error-bg'),
           'error-bg-dark': cssVar('error-bg-dark'),
           notification: cssVar('notification'),
+          attention: cssVar('attention'),
         },
         focus: {
           ring: cssVar('focus-ring'),

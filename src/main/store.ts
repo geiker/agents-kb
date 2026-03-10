@@ -54,6 +54,7 @@ function scheduleDiskFlush(): void {
 }
 
 function flushToDisk(): void {
+  if (process.env.DEMO_MODE === 'true') return;
   // Strip outputLog and rawMessages from persisted data
   const jobs = Array.from(jobCache.values()).map(j => ({
     ...j,
