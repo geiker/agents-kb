@@ -6,10 +6,12 @@ import { ProjectManager } from './components/ProjectManager';
 import { JobDetailPanel } from './components/JobDetailPanel';
 import { NewJobDialog } from './components/NewJobDialog';
 import { SettingsDialog } from './components/SettingsDialog';
+import { SkillsPanel } from './components/SkillsPanel';
 import { SetupScreen } from './components/SetupScreen';
 import { SplashScreen } from './components/SplashScreen';
 import { Kbd } from './components/Kbd';
 import { UpdateButton } from './components/UpdateButton';
+import { XIcon } from './components/Icons';
 import { getProjectColor } from '../shared/types';
 
 function applyDarkClass(isDark: boolean) {
@@ -26,6 +28,8 @@ export default function App() {
   const setShowNewJobDialog = useKanbanStore((s) => s.setShowNewJobDialog);
   const showSettings = useKanbanStore((s) => s.showSettings);
   const setShowSettings = useKanbanStore((s) => s.setShowSettings);
+  const showSkillsPanel = useKanbanStore((s) => s.showSkillsPanel);
+  const setShowSkillsPanel = useKanbanStore((s) => s.setShowSkillsPanel);
   const projects = useKanbanStore((s) => s.projects);
   const selectedProjectId = useKanbanStore((s) => s.selectedProjectId);
   const selectProject = useKanbanStore((s) => s.selectProject);
@@ -114,9 +118,7 @@ export default function App() {
                   className="ml-0.5 w-5 h-5 flex items-center justify-center rounded-full text-content-tertiary hover:text-content-primary hover:bg-surface-tertiary/80 transition-colors duration-150"
                   title="Clear project filter"
                 >
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                    <path d="M2.5 2.5L7.5 7.5M7.5 2.5L2.5 7.5" />
-                  </svg>
+                  <XIcon size={10} />
                 </button>
               </div>
             ) : (
@@ -146,6 +148,7 @@ export default function App() {
       {/* Modals */}
       {showNewJobDialog && <NewJobDialog />}
       {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
+      {showSkillsPanel && <SkillsPanel onClose={() => setShowSkillsPanel(false)} />}
     </div>
   );
 }

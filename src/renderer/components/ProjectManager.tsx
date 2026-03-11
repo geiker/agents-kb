@@ -4,6 +4,7 @@ import { useKanbanStore } from '../hooks/useKanbanStore';
 import { useElectronAPI } from '../hooks/useElectronAPI';
 import { ClaudeMdEditor } from './ClaudeMdEditor';
 import { Kbd } from './Kbd';
+import { LightbulbIcon, SettingsIcon, XIcon } from './Icons';
 import type { KanbanColumn, Project } from '../types/index';
 import { PROJECT_COLORS, getProjectColor } from '../types/index';
 import { NotificationBadge } from './NotificationBadge';
@@ -134,9 +135,7 @@ function ProjectDetailDialog({
           className="absolute top-2.5 right-2.5 p-1 rounded text-content-tertiary hover:text-content-primary hover:bg-surface-tertiary/70 transition-colors z-10"
           aria-label="Close"
         >
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-            <path d="M2 2l8 8M10 2l-8 8" />
-          </svg>
+          <XIcon size={12} />
         </button>
 
         {/* Header — name */}
@@ -402,6 +401,7 @@ export function ProjectManager() {
   const api = useElectronAPI();
 
   const setShowSettings = useKanbanStore((s) => s.setShowSettings);
+  const setShowSkillsPanel = useKanbanStore((s) => s.setShowSkillsPanel);
   const [detailProjectId, setDetailProjectId] = useState<string | null>(null);
   const [branchStatuses, setBranchStatuses] = useState<Map<string, BranchStatus[]>>(new Map());
   const [pushConfirm, setPushConfirm] = useState<{ projectId: string; branch: string } | null>(null);
@@ -774,17 +774,22 @@ export function ProjectManager() {
         })}
       </div>
 
-      {/* Settings footer */}
-      <div className="shrink-0 border-t border-chrome-subtle/70 px-4 py-2">
+      {/* Footer */}
+      <div className="shrink-0 border-t border-chrome-subtle/70 px-4 py-2 flex flex-col gap-1">
+        <button
+          onClick={() => setShowSkillsPanel(true)}
+          className="flex items-center gap-1.5 text-content-tertiary hover:text-content-secondary transition-colors"
+          title="Installed Skills"
+        >
+          <LightbulbIcon size={14} />
+          <span className="text-[11px]">Skills</span>
+        </button>
         <button
           onClick={() => setShowSettings(true)}
           className="flex items-center gap-1.5 text-content-tertiary hover:text-content-secondary transition-colors"
           title="Settings"
         >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="8" cy="8" r="2.5" />
-            <path d="M13.5 8a5.5 5.5 0 00-.08-.87l1.44-1.13a.34.34 0 00.08-.44l-1.37-2.36a.34.34 0 00-.42-.15l-1.7.68a5.3 5.3 0 00-1.5-.87L9.63 1.1a.34.34 0 00-.34-.28H6.56a.34.34 0 00-.34.28l-.25 1.8a5.3 5.3 0 00-1.5.87l-1.7-.68a.34.34 0 00-.42.15L.98 5.6a.34.34 0 00.08.44l1.44 1.13a5.5 5.5 0 000 1.74L1.06 10a.34.34 0 00-.08.44l1.37 2.36a.34.34 0 00.42.15l1.7-.68c.46.35.96.64 1.5.87l.25 1.8a.34.34 0 00.34.28h2.73a.34.34 0 00.34-.28l.25-1.8a5.3 5.3 0 001.5-.87l1.7.68a.34.34 0 00.42-.15l1.37-2.36a.34.34 0 00-.08-.44l-1.44-1.13c.05-.29.08-.58.08-.87z" />
-          </svg>
+          <SettingsIcon size={14} />
           <span className="text-[11px]">Settings<Kbd shortcutId="openSettings" /></span>
         </button>
       </div>

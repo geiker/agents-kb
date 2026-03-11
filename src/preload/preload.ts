@@ -74,6 +74,9 @@ const api: ElectronAPI = {
   claudeMdInit: (projectId) => ipcRenderer.invoke('claudemd:init', projectId),
   claudeMdWrite: (projectId, content) => ipcRenderer.invoke('claudemd:write', projectId, content),
 
+  // Skills
+  skillsList: (projectId?) => ipcRenderer.invoke('skills:list', projectId),
+
   // Updater
   updaterCheck: () => ipcRenderer.invoke('updater:check'),
   updaterDownload: () => ipcRenderer.invoke('updater:download'),

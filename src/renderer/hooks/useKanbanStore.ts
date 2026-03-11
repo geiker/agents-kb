@@ -11,6 +11,7 @@ interface KanbanState {
   selectedProjectId: string | null;
   showNewJobDialog: boolean;
   showSettings: boolean;
+  showSkillsPanel: boolean;
   settings: AppSettings;
 
   // Separate streaming data — not on jobs array
@@ -38,6 +39,7 @@ interface KanbanState {
   selectProject: (id: string | null) => void;
   setShowNewJobDialog: (show: boolean) => void;
   setShowSettings: (show: boolean) => void;
+  setShowSkillsPanel: (show: boolean) => void;
   setSettings: (settings: AppSettings) => void;
 
   // CLI Health
@@ -56,6 +58,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   selectedProjectId: null,
   showNewJobDialog: false,
   showSettings: false,
+  showSkillsPanel: false,
   settings: DEFAULT_SETTINGS,
   outputLogs: {},
   rawMessages: {},
@@ -151,6 +154,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   selectProject: (id) => set((s) => ({ selectedProjectId: s.selectedProjectId === id ? null : id })),
   setShowNewJobDialog: (show) => set({ showNewJobDialog: show }),
   setShowSettings: (show) => set({ showSettings: show }),
+  setShowSkillsPanel: (show) => set({ showSkillsPanel: show }),
   setSettings: (settings) => set({ settings }),
 
   checkCliHealth: async () => {

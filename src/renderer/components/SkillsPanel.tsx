@@ -1,0 +1,185 @@
+import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { useElectronAPI } from '../hooks/useElectronAPI';
+import { useKanbanStore } from '../hooks/useKanbanStore';
+import { LightbulbIcon, XIcon } from './Icons';
+import type { Skill } from '../types/index';
+
+export function SkillsPanel({ onClose }: { onClose: () => void }) {
+  const api = useElectronAPI();
+  const selectedProjectId = useKanbanStore((s) => s.selectedProjectId);
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [loading, setLoading] = useState(true);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api
+      .skillsList(selectedProjectId ?? undefined)
+      .then((result) => {
+        if (!cancelled) setSkills(result);
+      })
+      .catch(() => {
+        if (!cancelled) setSkills([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, selectedProjectId]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+        e.stopPropagation();
+      }
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [onClose]);
+
+  const projectSkills = skills.filter((s) => s.source === 'project');
+  const globalSkills = skills.filter((s) => s.source === 'global');
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center"
+      onClick={onClose}
+    >
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-surface-overlay/40 backdrop-blur-[2px]" />
+
+      {/* Dialog */}
+      <div
+        ref={dialogRef}
+        className="relative w-[500px] max-h-[72vh] rounded-xl border border-chrome/50 bg-surface-elevated shadow-2xl shadow-surface-overlay/20 overflow-hidden animate-[dialogIn_150ms_ease-out] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 pt-4 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-6 h-6 rounded-md bg-surface-tertiary/60 flex items-center justify-center">
+              <LightbulbIcon size={13} className="text-content-secondary" />
+            </div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-content-primary">
+                Skills
+              </h2>
+              {!loading && skills.length > 0 && (
+                <span className="text-[10px] font-medium tabular-nums text-content-tertiary bg-surface-tertiary/50 rounded-full px-1.5 py-0.5 leading-none">
+                  {skills.length}
+                </span>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1 rounded text-content-tertiary hover:text-content-primary hover:bg-surface-tertiary/70 transition-colors"
+            aria-label="Close"
+          >
+            <XIcon size={12} />
+          </button>
+        </div>
+
+        <div className="border-t border-chrome-subtle/70" />
+
+        {/* Content */}
+        <div className="px-5 py-4 overflow-y-auto flex-1">
+          {loading ? (
+            <div className="flex items-center justify-center py-10">
+              <svg
+                className="animate-spin h-4 w-4 text-content-tertiary"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+              >
+                <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
+                <path d="M12 2a10 10 0 019.5 7" strokeLinecap="round" />
+              </svg>
+            </div>
+          ) : skills.length === 0 ? (
+            <div className="text-center py-10">
+              <div className="w-10 h-10 rounded-xl bg-surface-tertiary/40 flex items-center justify-center mx-auto mb-3">
+                <LightbulbIcon size={18} className="text-content-tertiary" />
+              </div>
+              <p className="text-xs font-medium text-content-secondary">
+                No skills installed
+              </p>
+              <p className="text-[11px] text-content-tertiary mt-1.5 leading-relaxed max-w-[280px] mx-auto">
+                Add skill folders to{' '}
+                <span className="font-mono text-content-secondary">
+                  ~/.claude/skills/
+                </span>{' '}
+                or{' '}
+                <span className="font-mono text-content-secondary">
+                  .claude/skills/
+                </span>{' '}
+                in your project.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {projectSkills.length > 0 && (
+                <SkillSection label="Project" skills={projectSkills} startIndex={0} />
+              )}
+              {globalSkills.length > 0 && (
+                <SkillSection
+                  label="Global"
+                  skills={globalSkills}
+                  startIndex={projectSkills.length}
+                />
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function SkillSection({
+  label,
+  skills,
+  startIndex,
+}: {
+  label: string;
+  skills: Skill[];
+  startIndex: number;
+}) {
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-2.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-content-tertiary">
+          {label}
+        </span>
+        <div className="flex-1 h-px bg-chrome-subtle/50" />
+      </div>
+      <div>
+        {skills.map((skill, i) => (
+          <div
+            key={`${skill.source}-${skill.name}`}
+            className="py-2 px-1 border-b border-chrome-subtle/40 last:border-b-0"
+            style={{
+              animation: `skillCardIn 200ms ease-out ${(startIndex + i) * 40}ms both`,
+            }}
+          >
+            <span className="text-[12.5px] font-semibold font-mono text-content-primary">
+              {skill.name}
+            </span>
+            {skill.description && (
+              <p className="text-[11px] text-content-tertiary mt-0.5 leading-relaxed line-clamp-2">
+                {skill.description}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

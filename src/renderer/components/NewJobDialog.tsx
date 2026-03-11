@@ -6,6 +6,7 @@ import { Kbd } from './Kbd';
 import { SegmentedPicker } from './SegmentedPicker';
 import { MentionTextarea } from './MentionInput';
 import { MODEL_CATALOG, EFFORT_CATALOG, getProjectColor } from '../types/index';
+import { XIcon } from './Icons';
 import type { ModelChoice, EffortLevel } from '../types/index';
 
 interface AttachedImage {
@@ -297,9 +298,7 @@ export function NewJobDialog() {
                   onClick={() => removeImage(i)}
                   className="absolute inset-0 bg-surface-overlay/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-content-inverted"
                 >
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <path d="M4 4l8 8M12 4l-8 8" />
-                  </svg>
+                  <XIcon size={14} />
                 </button>
               </div>
             ))}

@@ -15,6 +15,7 @@ import { setupAutoUpdater } from './auto-updater';
 let mainWindow: BrowserWindow | null = null;
 
 const createWindow = () => {
+  const isDark = nativeTheme.shouldUseDarkColors;
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -22,6 +23,7 @@ const createWindow = () => {
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
+    backgroundColor: isDark ? '#0c0a09' : '#f1f0ee',
     webPreferences: {
       preload: path.join(__dirname, '../preload/preload.js'),
       contextIsolation: true,

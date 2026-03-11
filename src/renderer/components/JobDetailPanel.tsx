@@ -10,7 +10,7 @@ import { MentionInput, MentionTextarea } from './MentionInput';
 import { formatDuration, useNow } from '../utils/duration';
 import type { Job, FollowUp, GitSnapshot, AppSettings, OutputEntry, PhaseTokenUsage } from '../types/index';
 import { MODEL_CATALOG, EFFORT_CATALOG, getProjectColor } from '../types/index';
-import { BrainIcon, BranchIcon } from './Icons';
+import { BrainIcon, BranchIcon, TrashIcon, XIcon } from './Icons';
 import { PlanMarkdown } from './PlanMarkdown';
 
 export function JobDetailPanel() {
@@ -231,12 +231,7 @@ export function JobDetailPanel() {
                   aria-label="Delete job"
                   title="Delete job"
                 >
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M3 4h10M6 4V3a1 1 0 011-1h2a1 1 0 011 1v1" />
-                    <path d="M4.5 4l.5 9a1 1 0 001 1h4a1 1 0 001-1l.5-9" />
-                    <line x1="6.5" y1="7" x2="6.5" y2="11" />
-                    <line x1="9.5" y1="7" x2="9.5" y2="11" />
-                  </svg>
+                  <TrashIcon size={14} />
                 </button>
 
                 {/* Delete confirmation popover */}
@@ -301,9 +296,7 @@ export function JobDetailPanel() {
               className="p-1.5 text-content-tertiary hover:text-content-secondary transition-colors rounded"
               aria-label="Close panel"
             >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <path d="M4 4l8 8M12 4l-8 8" />
-              </svg>
+              <XIcon size={14} />
             </button>
           </div>
         </div>

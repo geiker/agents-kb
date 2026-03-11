@@ -172,7 +172,7 @@
   }
 
   body {
-    @apply m-0 p-0 font-sans overflow-hidden h-screen antialiased;
+    @apply m-0 p-0 font-sans overflow-hidden h-screen antialiased bg-surface-primary;
   }
 
   #root {
@@ -226,5 +226,16 @@
   to {
     opacity: 1;
     transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes skillCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }

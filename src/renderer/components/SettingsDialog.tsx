@@ -7,6 +7,7 @@ import { SegmentedPicker } from './SegmentedPicker';
 import { CheckForUpdatesButton } from './UpdateButton';
 import type { AppSettings, ShortcutBinding, ThemeMode, PreferredEditor, PermissionMode } from '../types/index';
 import { DEFAULT_SETTINGS, MODEL_CATALOG, EFFORT_CATALOG } from '../types/index';
+import { XIcon } from './Icons';
 
 const isMac =
   typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -132,9 +133,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             className="p-1 rounded text-content-tertiary hover:text-content-primary hover:bg-surface-tertiary/70 transition-colors"
             aria-label="Close"
           >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-              <path d="M2 2l8 8M10 2l-8 8" />
-            </svg>
+            <XIcon size={12} />
           </button>
         </div>
 
