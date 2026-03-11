@@ -68,9 +68,7 @@ export class ClaudeSession extends EventEmitter {
       args.push('--model', this.options.model);
     }
 
-    if (this.options.phase === 'plan') {
-      args.push('--permission-mode', 'plan');
-    } else if (this.options.permissionMode === 'default') {
+    if (this.options.permissionMode === 'default') {
       args.push('--permission-mode', 'default');
       // In print mode, --permission-mode default auto-denies tools without prompting.
       // Pre-approve common file-operation tools so Claude can work on the project.
