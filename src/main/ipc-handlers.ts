@@ -648,6 +648,7 @@ async function startClaudeSession(
   phase: 'plan' | 'dev',
   sessionId?: string,
   promptOverride?: string,
+  allowedTools?: string[],
 ) {
   const project = getProjects().find(p => p.id === job.projectId);
   if (!project) throw new Error('Project not found');
@@ -695,6 +696,7 @@ async function startClaudeSession(
     model: effectiveModel !== 'default' ? effectiveModel : undefined,
     effort: effectiveEffort !== 'default' ? effectiveEffort : undefined,
     permissionMode: settings.permissionMode,
+    allowedTools,
   });
 
   session.on('session-id', (sid: string) => {
@@ -716,6 +718,37 @@ async function startClaudeSession(
   });
 
   session.on('needs-input', (question: PendingQuestion) => {
+    const updated = updateJob(job.id, {
+      status: 'waiting-input',
+      pendingQuestion: question,
+      waitingStartedAt: new Date().toISOString(),
+    });
+    if (updated) {
+      sendToRenderer(getWindow, 'job:status-changed', updated);
+      sendToRenderer(getWindow, 'job:needs-input', { jobId: job.id, question });
+      notifyInputNeeded(job.id, project.name, job.title || job.prompt, question.text, getWindow);
+    }
+  });
+
+  session.on('permission-denied', ({ message, deniedTools }: { message: string; deniedTools: string[] }) => {
+    console.log('[ipc-handlers] Permission denied — killing session, prompting user. Tools:', deniedTools);
+    // Kill immediately to prevent wasteful retries
+    sessionManager.kill(job.id);
+
+    const toolList = deniedTools.length > 0 ? deniedTools.join(', ') : 'unknown tool';
+    const question: PendingQuestion = {
+      questionId: `perm-${Date.now()}`,
+      text: `Claude needs permission to use: ${toolList}`,
+      header: 'Permission Required',
+      options: [
+        { label: 'Allow', description: `Grant ${toolList} for this session and retry` },
+        { label: 'Deny', description: 'Cancel this operation' },
+      ],
+      isPermissionRequest: true,
+      deniedTools,
+      timestamp: new Date().toISOString(),
+    };
+
     const updated = updateJob(job.id, {
       status: 'waiting-input',
       pendingQuestion: question,
@@ -754,6 +787,11 @@ async function startClaudeSession(
   session.on('close', async (code: number) => {
     const current = getJob(job.id);
     if (!current) return;
+
+    // If session was killed for a permission prompt, don't overwrite the waiting-input state
+    if (current.pendingQuestion?.isPermissionRequest) {
+      return;
+    }
 
     // Compute merged token usage
     const tokens = session.tokenUsage;
@@ -1553,15 +1591,73 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     return updated;
   });
 
-  ipcMain.handle('jobs:respond', (_event, jobId: string, response: string) => {
+  ipcMain.handle('jobs:respond', async (_event, jobId: string, response: string) => {
+    const current = getJob(jobId);
+    if (!current) return;
+
+    // Handle permission request responses — session was killed, need to restart
+    if (current.pendingQuestion?.isPermissionRequest) {
+      const isAllowed = response.toLowerCase().includes('allow');
+
+      let totalPausedMs = current.totalPausedMs || 0;
+      if (current.waitingStartedAt) {
+        totalPausedMs += Date.now() - new Date(current.waitingStartedAt).getTime();
+      }
+
+      if (isAllowed) {
+        const deniedTools = current.pendingQuestion.deniedTools || [];
+        const phase = current.column === 'planning' ? 'plan' as const : 'dev' as const;
+        const outputLog = getOutputLog(jobId);
+        outputLog.push({
+          timestamp: new Date().toISOString(),
+          type: 'system',
+          content: `Permission granted for ${deniedTools.join(', ')} — resuming session...`,
+        });
+
+        const updated = updateJob(jobId, {
+          status: 'running',
+          pendingQuestion: undefined,
+          waitingStartedAt: undefined,
+          totalPausedMs,
+          outputLog,
+        });
+        if (updated) {
+          sendToRenderer(getWindow, 'job:status-changed', updated);
+        }
+
+        // Resume with the denied tools added to --allowedTools
+        await startClaudeSession(
+          { ...current, ...updated } as Job,
+          getWindow,
+          batchedSender,
+          phase,
+          current.sessionId, // resume the same session
+          'The required permissions have been granted. Please retry the operation that was previously denied.',
+          deniedTools, // pass only the specific denied tools
+        );
+      } else {
+        const updated = updateJob(jobId, {
+          status: 'error',
+          error: 'Permission denied by user',
+          pendingQuestion: undefined,
+          waitingStartedAt: undefined,
+          totalPausedMs,
+        });
+        if (updated) {
+          sendToRenderer(getWindow, 'job:status-changed', updated);
+          sendToRenderer(getWindow, 'job:error', { jobId, error: updated.error! });
+        }
+      }
+      return;
+    }
+
+    // Normal question response — forward to active session
     const session = sessionManager.get(jobId);
     if (session) {
       session.sendResponse(response);
 
-      // Accumulate paused time
-      const current = getJob(jobId);
-      let totalPausedMs = current?.totalPausedMs || 0;
-      if (current?.waitingStartedAt) {
+      let totalPausedMs = current.totalPausedMs || 0;
+      if (current.waitingStartedAt) {
         totalPausedMs += Date.now() - new Date(current.waitingStartedAt).getTime();
       }
 

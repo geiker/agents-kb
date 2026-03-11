@@ -17,6 +17,8 @@ export interface ClaudeSessionOptions {
   model?: string;
   effort?: string;
   permissionMode?: PermissionMode;
+  /** Extra tools to pre-approve via --allowedTools */
+  allowedTools?: string[];
 }
 
 export class ClaudeSession extends EventEmitter {
@@ -32,6 +34,8 @@ export class ClaudeSession extends EventEmitter {
   private assistantTextBuffer = '';
   private isAskingQuestion = false;
   private pendingPlanFileRead = '';
+  private permissionDeniedEmitted = false;
+  private toolUseIdToName = new Map<string, string>();
   private _inputTokens = 0;
   private _outputTokens = 0;
   private _currentMsgOutputTokens = 0;
@@ -65,9 +69,15 @@ export class ClaudeSession extends EventEmitter {
     }
 
     if (this.options.phase === 'plan') {
-      args.push('--permission-mode', 'default');
+      args.push('--permission-mode', 'plan');
     } else if (this.options.permissionMode === 'default') {
       args.push('--permission-mode', 'default');
+      // In print mode, --permission-mode default auto-denies tools without prompting.
+      // Pre-approve common file-operation tools so Claude can work on the project.
+      const defaultAllowed = ['Edit', 'Write', 'NotebookEdit'];
+      const extra = this.options.allowedTools || [];
+      const merged = [...new Set([...defaultAllowed, ...extra])];
+      args.push('--allowedTools', ...merged);
     } else {
       args.push('--dangerously-skip-permissions');
     }
@@ -181,11 +191,31 @@ export class ClaudeSession extends EventEmitter {
       }
 
       case 'assistant': {
-        // Complete assistant message — tool-use blocks already streamed via deltas, skip duplicates
+        // Track tool_use IDs → names for permission denial detection
+        const assistantMsg = msg.message as Record<string, unknown> | undefined;
+        const assistantContent = assistantMsg?.content as Array<Record<string, unknown>> | undefined;
+        if (Array.isArray(assistantContent)) {
+          for (const block of assistantContent) {
+            if (block.type === 'tool_use' && block.id && block.name) {
+              this.toolUseIdToName.set(block.id as string, block.name as string);
+            }
+          }
+        }
         break;
       }
 
       case 'result': {
+        // Fallback: detect permission denials from the result's permission_denials array
+        const permDenials = msg.permission_denials as Array<{ tool_name?: string }> | undefined;
+        if (Array.isArray(permDenials) && permDenials.length > 0 && !this.permissionDeniedEmitted) {
+          this.permissionDeniedEmitted = true;
+          const toolNames = permDenials.map(d => d.tool_name).filter(Boolean) as string[];
+          const unique = [...new Set(toolNames)];
+          const message = `Claude needs permission to use: ${unique.join(', ')}`;
+          console.log('[claude-session] Permission denied (from result):', message);
+          this.emit('permission-denied', { message, deniedTools: unique });
+        }
+
         const subtype = msg.subtype as string;
         const result = (msg.result as string) || '';
         if (subtype === 'success') {
@@ -274,8 +304,33 @@ export class ClaudeSession extends EventEmitter {
           }
         }
 
+        // Detect permission denial from top-level tool_use_result field
+        const toolUseResult = msg.tool_use_result as string | undefined;
+        if (toolUseResult && !this.permissionDeniedEmitted && toolUseResult.includes('Claude requested permissions to')) {
+          this.permissionDeniedEmitted = true;
+          // Resolve the denied tool name from the tool_use_id → name map
+          const userMsg = msg.message as Record<string, unknown> | undefined;
+          const blocks = userMsg?.content as Array<Record<string, unknown>> | undefined;
+          const deniedTools = new Set<string>();
+          if (Array.isArray(blocks)) {
+            for (const b of blocks) {
+              if (b.type === 'tool_result' && b.tool_use_id) {
+                const name = this.toolUseIdToName.get(b.tool_use_id as string);
+                if (name) deniedTools.add(name);
+              }
+            }
+          }
+          console.log('[claude-session] Permission denied:', toolUseResult, 'tools:', [...deniedTools]);
+          this.emit('permission-denied', {
+            message: toolUseResult.replace(/^Error:\s*/, ''),
+            deniedTools: [...deniedTools],
+          });
+        }
+
         // Tool results come back as user messages containing tool_result content blocks
-        const content = msg.content as Array<Record<string, unknown>> | undefined;
+        // Content may be at msg.content or msg.message.content depending on CLI version
+        const userMessage = msg.message as Record<string, unknown> | undefined;
+        const content = (msg.content ?? userMessage?.content) as Array<Record<string, unknown>> | undefined;
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'tool_result') {

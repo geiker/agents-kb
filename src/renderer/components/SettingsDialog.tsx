@@ -291,18 +291,39 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             <Toggle checked={local.showModelEffortInNewJob} onChange={() => save({ ...local, showModelEffortInNewJob: !local.showModelEffortInNewJob })} />
           </div>
 
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-[13px] text-content-primary">Permission Mode</div>
-              <div className="text-[11px] text-content-tertiary mt-0.5">
-                How Claude handles permissions during development
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[13px] text-content-primary">Permission Mode</div>
+                <div className="text-[11px] text-content-tertiary mt-0.5">
+                  How Claude handles permissions during development
+                </div>
               </div>
+              <SegmentedPicker
+                options={PERMISSION_OPTIONS}
+                value={local.permissionMode}
+                onChange={(permissionMode) => save({ ...local, permissionMode })}
+              />
             </div>
-            <SegmentedPicker
-              options={PERMISSION_OPTIONS}
-              value={local.permissionMode}
-              onChange={(permissionMode) => save({ ...local, permissionMode })}
-            />
+            <div className="rounded-md bg-chrome-subtle/30 px-3 py-2 text-[11px] text-content-tertiary leading-relaxed">
+              {local.permissionMode === 'default' ? (
+                <>
+                  <span className="text-content-secondary font-medium">Default</span> — Claude can read files, search, and edit/write files.
+                  Bash and other system tools require explicit approval.
+                  <span className="mt-1 block text-[10px] text-content-quaternary">
+                    Allowed: Read, Glob, Grep, Edit, Write, NotebookEdit
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="text-content-secondary font-medium">Skip All</span> — All permission checks are bypassed.
+                  Claude can run any tool including Bash without asking.
+                  <span className="mt-1 block text-[10px] text-content-quaternary">
+                    Only use in trusted environments with no internet access.
+                  </span>
+                </>
+              )}
+            </div>
           </div>
 
           <div className="border-t border-chrome-subtle/40" />

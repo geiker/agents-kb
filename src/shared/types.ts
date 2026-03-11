@@ -231,6 +231,10 @@ export interface PendingQuestion {
   options?: QuestionOption[];
   multiSelect?: boolean;
   timestamp: string;
+  /** When true, this prompt was triggered by a CLI permission denial */
+  isPermissionRequest?: boolean;
+  /** Tool names that were denied (e.g. ['Bash']) */
+  deniedTools?: string[];
 }
 
 export interface RawMessage {
