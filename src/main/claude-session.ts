@@ -392,7 +392,7 @@ export class ClaudeSession extends EventEmitter {
       }
 
       case 'input_request': {
-        // CLI may emit input_request when waiting for user input
+        // CLI may emit input_request when waiting for user input (e.g. permission prompts)
         const questionText = (msg.question as string) || (msg.message as string) || 'Claude is waiting for input';
         let options: QuestionOption[] | undefined;
         if (Array.isArray(msg.options)) {
@@ -408,6 +408,9 @@ export class ClaudeSession extends EventEmitter {
           options,
           timestamp: new Date().toISOString(),
         } satisfies PendingQuestion);
+        // Kill the session so Claude doesn't continue executing while waiting for user response
+        // (same pattern as AskUserQuestion — session will be resumed via jobs:respond)
+        this.emit('user-question');
         break;
       }
 
