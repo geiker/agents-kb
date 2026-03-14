@@ -919,10 +919,13 @@ function DetailPhaseDurations({ job, now, settings }: { job: Job; now: number; s
   }
 
   const phases: { label: string; value: string; accentColor: string; dotColor: string; active: boolean; tokens?: PhaseTokenUsage }[] = [];
+  const errorEnd = job.erroredAt ? new Date(job.erroredAt).getTime() : null;
 
   if (job.planningStartedAt) {
-    const isLive = job.column === 'planning' && !job.planningEndedAt && job.status !== 'plan-ready';
-    const end = job.planningEndedAt ? new Date(job.planningEndedAt).getTime() : (job.column === 'planning' ? now : null);
+    const isLive = job.column === 'planning' && !job.planningEndedAt && job.status !== 'plan-ready' && job.status !== 'error';
+    const end = job.planningEndedAt
+      ? new Date(job.planningEndedAt).getTime()
+      : (job.status === 'error' && job.column === 'planning' ? errorEnd : (job.column === 'planning' ? now : null));
     const phasePaused = job.column === 'planning' ? pausedMs : (job.totalPausedMs || 0);
     if (end) {
       phases.push({
@@ -937,8 +940,10 @@ function DetailPhaseDurations({ job, now, settings }: { job: Job; now: number; s
   }
 
   if (job.developmentStartedAt) {
-    const isLive = job.column === 'development' && !job.completedAt;
-    const end = job.completedAt ? new Date(job.completedAt).getTime() : (job.column === 'development' ? now : null);
+    const isLive = job.column === 'development' && !job.completedAt && job.status !== 'error';
+    const end = job.completedAt
+      ? new Date(job.completedAt).getTime()
+      : (job.status === 'error' && job.column === 'development' ? errorEnd : (job.column === 'development' ? now : null));
     // Subtract planning pauses so only dev pauses count
     const devPaused = job.column === 'development'
       ? Math.max(0, pausedMs - (job.planningPausedMs || 0))

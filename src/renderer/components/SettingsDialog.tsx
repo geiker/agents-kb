@@ -42,7 +42,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [recordingId, setRecordingId] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string>('');
   const [accountInfo, setAccountInfo] = useState<AccountInfo | null>(null);
-  const [installedEditors, setInstalledEditors] = useState<Record<string, boolean> | null>(null);
+  const installedEditors = useKanbanStore((s) => s.installedEditors);
   const dialogRef = useRef<HTMLDivElement>(null);
   const localRef = useRef(local);
   const saveQueueRef = useRef(Promise.resolve());
@@ -54,7 +54,6 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     window.electronAPI.appGetVersion().then(setAppVersion).catch(() => { });
     window.electronAPI.accountInfo().then((info) => { if (info) setAccountInfo(info); }).catch(() => { });
-    window.electronAPI.editorsDetectInstalled().then(setInstalledEditors).catch(() => { });
     const unsub = window.electronAPI.onAccountUpdated(setAccountInfo);
     return unsub;
   }, []);

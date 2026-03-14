@@ -265,6 +265,7 @@ export function markStaleJobs(): void {
     if (job.status === 'running' || job.status === 'waiting-input') {
       job.status = 'error';
       job.error = 'App was restarted while this job was running. Please retry.';
+      job.erroredAt = new Date().toISOString();
       changed = true;
     }
   }

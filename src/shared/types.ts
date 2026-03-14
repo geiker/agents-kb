@@ -357,6 +357,7 @@ export interface Job {
   planText?: string;
   summaryText?: string;
   error?: string;
+  erroredAt?: string;
   branch?: string;
   images?: JobImage[];
   skipPlanning?: boolean;

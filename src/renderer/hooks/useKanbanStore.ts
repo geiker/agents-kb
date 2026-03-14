@@ -16,6 +16,8 @@ interface KanbanState {
   settings: AppSettings;
   /** Dynamic model catalog from the SDK (updated after first session starts) */
   availableModels: ModelOption[];
+  /** Installed editors detected once at startup */
+  installedEditors: Record<string, boolean> | null;
 
   // Separate streaming data — not on jobs array
   outputLogs: Record<string, OutputEntry[]>;
@@ -46,6 +48,7 @@ interface KanbanState {
   setPromptHistoryJobId: (id: string | null) => void;
   setSettings: (settings: AppSettings) => void;
   setAvailableModels: (models: ModelOption[]) => void;
+  setInstalledEditors: (editors: Record<string, boolean>) => void;
 
   // CLI Health
   checkCliHealth: () => Promise<void>;
@@ -67,6 +70,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   promptHistoryJobId: null,
   settings: DEFAULT_SETTINGS,
   availableModels: MODEL_CATALOG,
+  installedEditors: null,
   outputLogs: {},
   rawMessages: {},
 
@@ -165,6 +169,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   setPromptHistoryJobId: (id) => set({ promptHistoryJobId: id }),
   setSettings: (settings) => set({ settings }),
   setAvailableModels: (models) => set({ availableModels: models }),
+  setInstalledEditors: (editors) => set({ installedEditors: editors }),
 
   checkCliHealth: async () => {
     set({ cliHealthLoading: true });
@@ -193,6 +198,11 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
     api.modelsList().then((models) => {
       if (models?.length) get().setAvailableModels(models);
     }).catch(() => { /* fallback to hardcoded catalog */ });
+
+    // Detect installed editors once at startup (cached for the session)
+    api.editorsDetectInstalled().then((editors) => {
+      if (editors) set({ installedEditors: editors });
+    }).catch(() => { /* editor detection failed, leave as null */ });
 
     // Listen for dynamic model updates from the SDK (pushed after first session starts)
     api.onModelsUpdated((models) => {

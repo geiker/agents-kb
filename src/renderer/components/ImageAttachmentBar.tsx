@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { ImageLightbox } from './ImageLightbox';
 import type { AttachedImage } from '../hooks/useImageAttachment';
 
@@ -21,18 +21,23 @@ interface ImageAttachmentBarProps {
 export function ImageAttachmentBar({ images, onRemove, onAddFiles, compact }: ImageAttachmentBarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [thumbSize, setThumbSize] = useState(0);
 
-  const thumbSize = compact ? 26 : 34;
+  /* Measure the attach button so thumbnails match its height exactly */
+  const attachBtnRef = useCallback((node: HTMLButtonElement | null) => {
+    if (node) setThumbSize(node.offsetHeight);
+  }, []);
 
   return (
     <>
-      {/* Inline strip: attach button + thumbnails */}
+      {/* Inline strip: attach button + thumbnails on same row */}
       <div className={`flex items-center gap-1.5 ${compact ? '' : 'mb-4'}`}>
         {/* Attach button */}
         <button
+          ref={attachBtnRef}
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="shrink-0 flex items-center gap-1 rounded-md text-content-tertiary hover:text-content-secondary transition-colors px-1 py-0.5 text-[11px]"
+          className="shrink-0 flex items-center gap-1 rounded-md border border-chrome text-content-secondary hover:bg-surface-tertiary hover:text-content-primary transition-all duration-150 px-2 py-1 text-[11px]"
         >
           <svg
             width={12}
@@ -43,7 +48,7 @@ export function ImageAttachmentBar({ images, onRemove, onAddFiles, compact }: Im
             strokeWidth="1.5"
             strokeLinecap="round"
             strokeLinejoin="round"
-            className="opacity-70"
+            className="opacity-90"
           >
             <rect x="2" y="2" width="12" height="12" rx="2" />
             <circle cx="5.5" cy="5.5" r="1" />
@@ -52,9 +57,9 @@ export function ImageAttachmentBar({ images, onRemove, onAddFiles, compact }: Im
           <span>Attach</span>
         </button>
 
-        {/* Thumbnail strip */}
-        {images.length > 0 && (
-          <div className="flex items-center gap-2.5 min-w-0 py-1 px-1">
+        {/* Thumbnail strip — each thumb is a square matching the button height */}
+        {images.length > 0 && thumbSize > 0 && (
+          <div className="flex items-center gap-1.5 min-w-0">
             {images.map((img, i) => (
               <div
                 key={i}
@@ -65,7 +70,7 @@ export function ImageAttachmentBar({ images, onRemove, onAddFiles, compact }: Im
                 <button
                   type="button"
                   onClick={() => setLightboxIndex(i)}
-                  className="w-full h-full rounded overflow-hidden border border-chrome/40 hover:border-content-tertiary/60 transition-colors cursor-pointer block focus:outline-none focus:ring-1 focus:ring-focus-ring/40"
+                  className="w-full h-full rounded-md overflow-hidden border border-chrome hover:border-content-tertiary/60 transition-colors cursor-pointer block focus:outline-none focus:ring-1 focus:ring-focus-ring/40"
                 >
                   <img
                     src={img.dataUrl}

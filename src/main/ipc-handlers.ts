@@ -512,6 +512,7 @@ async function startClaudeSession(
         const updated = updateJob(job.id, {
           status: 'error',
           error: `Claude process exited with code ${code}`,
+          erroredAt: new Date().toISOString(),
           [tokenField]: mergedTokens,
         });
         if (updated) {
@@ -575,6 +576,7 @@ async function startClaudeSession(
     const updated = updateJob(job.id, {
       status: 'error',
       error: errorMsg,
+      erroredAt: new Date().toISOString(),
     });
     if (updated) {
       sendToRenderer(getWindow, 'job:status-changed', updated);
@@ -1315,6 +1317,7 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     const updated = updateJob(jobId, {
       status: 'error',
       error: 'Cancelled by user',
+      erroredAt: new Date().toISOString(),
     });
     if (updated) {
       sendToRenderer(getWindow, 'job:status-changed', updated);

@@ -8,6 +8,7 @@ files:
 asar: true
 asarUnpack:
   - node_modules/node-pty/**
+  - node_modules/@anthropic-ai/claude-agent-sdk/**
 mac:
   category: public.app-category.developer-tools
   icon: assets/icon.icns
