@@ -1,7 +1,7 @@
-export type { KanbanColumn, JobStatus, Project, OutputEntry, RawMessage, PendingQuestion, FollowUp, Job, GitSnapshot, JobStepSnapshot, JobFileSnapshot, ShortcutBinding, AppSettings, ThemeMode, ModelChoice, EffortLevel, ModelOption, EffortOption, PromptConfig, PromptId, PreferredEditor, PermissionMode, PermissionModeOption, ProjectColorId, CliHealthStatus, PhaseTokenUsage, Skill } from '../../shared/types';
+export type { KanbanColumn, JobStatus, Project, OutputEntry, RawMessage, PendingQuestion, FollowUp, Job, JobStepSnapshot, JobFileSnapshot, ShortcutBinding, AppSettings, ThemeMode, ModelChoice, EffortLevel, ModelOption, EffortOption, PromptConfig, PromptId, PreferredEditor, PermissionMode, PermissionModeOption, ProjectColorId, CliHealthStatus, PhaseTokenUsage, Skill, DynamicModelInfo, RewindFilesResult, AccountInfo } from '../../shared/types';
 export { DEFAULT_SETTINGS, DEFAULT_SHORTCUTS, DEFAULT_COMMIT_PROMPT, DEFAULT_PROMPT_CONFIGS, PROMPT_IDS, MODEL_CATALOG, EFFORT_CATALOG, PROJECT_COLORS, getProjectColor, PERMISSION_MODE_CATALOG } from '../../shared/types';
 
-import type { Project, Job, OutputEntry, RawMessage, PendingQuestion, AppSettings, ModelChoice, EffortLevel, CliHealthStatus, Skill } from '../../shared/types';
+import type { Project, Job, OutputEntry, RawMessage, PendingQuestion, AppSettings, ModelChoice, EffortLevel, CliHealthStatus, Skill, AccountInfo, RewindFilesResult, ModelOption } from '../../shared/types';
 
 // IPC API exposed via preload
 export interface ElectronAPI {
@@ -53,6 +53,11 @@ export interface ElectronAPI {
   jobsRejectJob: (jobId: string, snapshotIndex?: number) => Promise<void>;
   jobsFollowUp: (jobId: string, prompt: string) => Promise<Job>;
 
+  // File Rewind
+  jobsRewindPreview: (jobId: string, userMessageId?: string) => Promise<RewindFilesResult>;
+  jobsRewindFiles: (jobId: string, userMessageId?: string) => Promise<RewindFilesResult>;
+  jobsRewindMessages: (jobId: string) => Promise<string[]>;
+
   // Files
   filesList: (projectId: string) => Promise<string[]>;
 
@@ -71,6 +76,14 @@ export interface ElectronAPI {
 
   // Skills
   skillsList: (projectId?: string) => Promise<Skill[]>;
+
+  // Models
+  modelsList: () => Promise<ModelOption[]>;
+  onModelsUpdated: (callback: (models: ModelOption[]) => void) => () => void;
+
+  // Account
+  accountInfo: () => Promise<AccountInfo | null>;
+  onAccountUpdated: (callback: (info: AccountInfo) => void) => () => void;
 
   // App
   appGetVersion: () => Promise<string>;

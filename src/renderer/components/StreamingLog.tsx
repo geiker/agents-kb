@@ -7,7 +7,7 @@ interface StreamingLogProps {
 }
 
 interface Section {
-  kind: 'text' | 'thinking' | 'tool' | 'system' | 'error' | 'plan';
+  kind: 'text' | 'thinking' | 'tool' | 'system' | 'error' | 'plan' | 'rate-limit' | 'progress';
   content: string;
   toolName?: string;
   toolResult?: string;
@@ -135,6 +135,15 @@ function buildSections(entries: OutputEntry[]): Section[] {
       }
     } else if (entry.type === 'error') {
       sections.push({ kind: 'error', content: entry.content, timestamp: entry.timestamp });
+    } else if (entry.type === 'rate-limit') {
+      sections.push({ kind: 'rate-limit', content: entry.content, timestamp: entry.timestamp });
+    } else if (entry.type === 'progress') {
+      // Merge consecutive progress entries for the same tool
+      if (last?.kind === 'progress' && entry.toolName && last.toolName === entry.toolName) {
+        last.content = entry.content;
+      } else {
+        sections.push({ kind: 'progress', content: entry.content, toolName: entry.toolName, timestamp: entry.timestamp });
+      }
     } else {
       // system — each entry gets its own section (don't concatenate)
       sections.push({ kind: 'system', content: entry.content, timestamp: entry.timestamp });
@@ -417,6 +426,21 @@ export function StreamingLog({ entries }: StreamingLogProps) {
         if (section.kind === 'error') {
           return (
             <div key={key} className="text-semantic-error-light whitespace-pre-wrap break-words my-1 px-2 py-1 rounded bg-semantic-error-bg-dark/20">
+              {section.content}
+            </div>
+          );
+        }
+        if (section.kind === 'rate-limit') {
+          return (
+            <div key={key} className="flex items-center gap-1.5 text-semantic-warning whitespace-pre-wrap break-words my-1 px-2 py-1 rounded bg-semantic-warning/10 border border-semantic-warning/20 text-[11px]">
+              <span className="shrink-0">&#9888;</span>
+              {section.content}
+            </div>
+          );
+        }
+        if (section.kind === 'progress') {
+          return (
+            <div key={key} className="text-terminal-text-muted/50 whitespace-pre-wrap break-words my-0.5 text-[10px] italic">
               {section.content}
             </div>
           );

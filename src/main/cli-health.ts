@@ -1,7 +1,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as nodePty from 'node-pty';
-import type { CliHealthStatus } from '../shared/types';
+import type { CliHealthStatus, AccountInfo } from '../shared/types';
 
 const execFileAsync = promisify(execFile);
 
@@ -34,6 +34,30 @@ export async function checkCliHealth(): Promise<CliHealthStatus> {
     return { installed: true, authenticated: true, version };
   } catch {
     return { installed: true, authenticated: false, version, error: 'Claude Code CLI is not logged in.' };
+  }
+}
+
+/**
+ * Fetch account info from `claude auth status --json`.
+ * Returns null if not authenticated or on error.
+ */
+export async function fetchAccountInfo(): Promise<AccountInfo | null> {
+  try {
+    const { stdout } = await execFileAsync('claude', ['auth', 'status', '--json'], {
+      timeout: 10_000,
+      env: { ...process.env, PATH: process.env.PATH },
+    });
+    const data = JSON.parse(stdout.trim());
+    if (!data.loggedIn) return null;
+    return {
+      email: data.email || undefined,
+      organization: data.orgName || undefined,
+      subscriptionType: data.subscriptionType || undefined,
+      tokenSource: data.authMethod || undefined,
+      apiKeySource: data.apiProvider || undefined,
+    };
+  } catch {
+    return null;
   }
 }
 

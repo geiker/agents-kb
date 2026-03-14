@@ -99,7 +99,7 @@ type SettingsUpdateState =
 
 export function CheckForUpdatesButton() {
   const [state, setState] = useState<SettingsUpdateState>({ status: 'idle' });
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
     const api = window.electronAPI;

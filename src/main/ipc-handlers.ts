@@ -1,9 +1,9 @@
 import { app, ipcMain, dialog, BrowserWindow, nativeTheme, shell } from 'electron';
+import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { createHash } from 'crypto';
 import {
   getProjects,
   addProject,
@@ -25,21 +25,17 @@ import {
 } from './store';
 import { sessionManager } from './session-manager';
 import { notifyInputNeeded, notifyJobComplete, notifyJobError, notifyPlanReady } from './notifications';
-import { checkCliHealth, spawnLogin } from './cli-health';
+import { checkCliHealth, spawnLogin, fetchAccountInfo } from './cli-health';
 import { isDemoMode, getDemoProjects, getDemoJobs, getDemoSettings, getDemoBranchStatuses } from './demo-loader';
-import { isGitRepoRoot, captureSnapshot, restoreSnapshot, cleanupAllSnapshots, getDiff, listBranches, checkoutBranch, gitStageAll, gitCommit, getBranchesStatus, gitPush, listChangedFiles, readHeadFileState } from './git-snapshot';
+import { isGitRepoRoot, listBranches, checkoutBranch, gitStageAll, gitCommit, getBranchesStatus, gitPush } from './git-snapshot';
 import { listSkills } from './skills';
 import { listProjectFiles } from './file-list';
-import type { Job, OutputEntry, RawMessage, PendingQuestion, AppSettings, Project, ModelChoice, EffortLevel, PromptConfig, PermissionMode } from '../shared/types';
-import { DEFAULT_PROMPT_CONFIGS } from '../shared/types';
+import type { Job, OutputEntry, RawMessage, PendingQuestion, AppSettings, Project, ModelChoice, EffortLevel, PromptConfig, PermissionMode, DynamicModelInfo, ModelOption, Skill, AccountInfo } from '../shared/types';
+import { DEFAULT_PROMPT_CONFIGS, MODEL_CATALOG } from '../shared/types';
 import {
   JobStepHistoryTracker,
-  buildDiffFromEntries,
   buildRollbackTargets,
   buildStoredDiff,
-  fileSnapshotAfterState,
-  fileStatesEqual,
-  type FileState,
   getLatestProjectAppliedSeq,
   getNextProjectAppliedSeq,
   normalizeToolPath,
@@ -51,6 +47,24 @@ import {
 type WindowGetter = () => BrowserWindow | null;
 
 const stepHistoryTracker = new JobStepHistoryTracker();
+
+// --- Dynamic model catalog from SDK ---
+let cachedDynamicModels: DynamicModelInfo[] | null = null;
+
+// --- SDK skills cache (keyed by project path) ---
+const sdkSkillsCache = new Map<string, Skill[]>();
+
+// --- Account info from SDK ---
+let cachedAccountInfo: AccountInfo | null = null;
+
+/** Convert SDK ModelInfo[] to ModelOption[] for the renderer */
+function buildModelCatalog(models: DynamicModelInfo[]): ModelOption[] {
+  return models.map((m) => ({
+    value: m.value,
+    label: m.displayName,
+    badge: m.displayName.toUpperCase(),
+  }));
+}
 
 /** Extract file paths touched by Write/Edit tools from the output log */
 function extractEditedFilePaths(entries: OutputEntry[], projectPath: string): string[] {
@@ -119,12 +133,6 @@ async function startDevelopmentPhase(
   if (!job) throw new Error('Job not found');
 
   const now = new Date().toISOString();
-  const project = getProjects().find(p => p.id === job.projectId);
-  const snapshots = [...(job.gitSnapshots || [])];
-  if (snapshots.length === 0 && project && projectIsGitRepo(project)) {
-    const snapshot = await captureSnapshot(project.path, jobId, 0, 'Original');
-    if (snapshot) snapshots.push(snapshot);
-  }
 
   const outputLog = getOutputLog(jobId);
   outputLog.push({
@@ -141,7 +149,6 @@ async function startDevelopmentPhase(
     waitingStartedAt: undefined,
     planningEndedAt: updates.planningEndedAt || now,
     developmentStartedAt: updates.developmentStartedAt || now,
-    gitSnapshots: snapshots,
     outputLog,
   });
 
@@ -150,7 +157,6 @@ async function startDevelopmentPhase(
       jobId,
       getStepLabel((job.stepSnapshots || []).length),
       (job.stepSnapshots || []).length,
-      snapshots.length > 0 ? 0 : undefined,
     );
     sendToRenderer(getWindow, 'job:status-changed', updated);
     await startClaudeSession(updated, getWindow, batchedSender, 'dev', sessionId || job.sessionId);
@@ -201,13 +207,9 @@ async function cleanupCompletedJobsForBranch(project: Project, branch: string): 
 
   for (const job of completedJobs) {
     stepHistoryTracker.discardStep(job.id);
-    if (job.gitSnapshots?.length) {
-      await cleanupAllSnapshots(project.path, job.gitSnapshots);
-    }
     deleteJob(job.id);
   }
 
-  invalidateCommitMessageCache(project.id, branch);
   return completedJobs.map((job) => job.id);
 }
 
@@ -270,199 +272,10 @@ class BatchedSender {
   }
 }
 
-interface CommitMessageCacheEntry {
-  fingerprint: string;
-  message: string;
-}
-
-interface OrderedCommitJob {
-  job: Job;
-  sortSeq: number;
-  message: string;
-}
-
-interface BranchCommitInputs {
-  fingerprint: string;
-  perJobItems: string[];
-  uncategorizedDiff: string;
-}
-
-const commitMessageCache = new Map<string, CommitMessageCacheEntry>();
-
-function hashText(value: string): string {
-  return createHash('sha1').update(value).digest('hex');
-}
-
-function commitCacheKey(projectId: string, branch: string): string {
-  return `${projectId}:${branch}`;
-}
-
-function invalidateCommitMessageCache(projectId: string, branch?: string): void {
-  if (!branch) return;
-  commitMessageCache.delete(commitCacheKey(projectId, branch));
-}
-
-function sanitizeCommitLine(value: string | undefined | null): string {
-  if (!value) return '';
-  return value
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)[0]
-    ?.replace(/^[-*+]\s+/, '')
-    .replace(/^\d+\.\s+/, '')
-    .replace(/^["'`]+|["'`]+$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim() || '';
-}
-
-function parseCommitListLines(value: string | undefined | null): string[] {
-  if (!value) return [];
-  return value
-    .split('\n')
-    .map((line) => sanitizeCommitLine(line))
-    .filter(Boolean);
-}
-
-function fallbackCommitSubject(): string {
-  return 'chore: apply completed jobs';
-}
-
-function fallbackCommitItem(): string {
-  return 'chore: update project';
-}
-
-function fallbackExtraCommitItem(): string {
-  return 'chore: update additional branch changes';
-}
-
-function buildJobContext(job: Job): string {
-  const sections = [
-    `Primary task: ${job.title || job.prompt}`,
-  ];
-
-  if (job.followUps?.length) {
-    sections.push(
-      'Follow-ups:',
-      ...job.followUps.map((followUp, index) => `- ${index + 1}. ${followUp.title || followUp.prompt}`),
-    );
-  }
-
-  if (job.stepSnapshots?.length) {
-    sections.push(
-      'Development steps:',
-      ...job.stepSnapshots.map((step) => `- ${step.label}`),
-    );
-  }
-
-  return sections.join('\n');
-}
-
-function buildPerJobCommitPrompt(config: PromptConfig, job: Job, diffText: string): string {
-  return [
-    config.prompt,
-    'Summarize the ENTIRE job below as a single concise conventional-commit line.',
-    'Use the full job context and the cumulative diff, not just the latest follow-up or last step.',
-    'Output exactly one line with no bullet prefix, no numbering, and no surrounding quotes.',
-    '',
-    'JOB CONTEXT:',
-    buildJobContext(job),
-    '',
-    'JOB DIFF:',
-    diffText || '[no diff available]',
-  ].join('\n');
-}
-
-function buildExtraCommitItemsPrompt(config: PromptConfig, diffText: string): string {
-  return [
-    config.prompt,
-    'Summarize ONLY the uncategorized branch changes below.',
-    'Output one or more concise conventional-commit lines, one item per line, with no bullet prefixes, no numbering, and no surrounding quotes.',
-    '',
-    'UNCATEGORIZED DIFF:',
-    diffText,
-  ].join('\n');
-}
-
-function buildCommitSubjectPrompt(config: PromptConfig, items: string[]): string {
-  return [
-    config.prompt,
-    'Generate a single concise conventional-commit subject that covers the combined list below.',
-    'Output exactly one line with no bullet prefix, no numbering, and no surrounding quotes.',
-    '',
-    'COMBINED ITEMS:',
-    ...items.map((item) => `- ${item}`),
-  ].join('\n');
-}
-
-function buildCommitMessage(subject: string, items: string[], options?: { omitSingleItemBody?: boolean }): string {
-  const cleanSubject = sanitizeCommitLine(subject) || fallbackCommitSubject();
-  const cleanItems = items.map((item) => sanitizeCommitLine(item)).filter(Boolean);
-  if (options?.omitSingleItemBody && cleanItems.length === 1) return cleanSubject;
-  if (cleanItems.length === 0) return cleanSubject;
-  return `${cleanSubject}\n\n${cleanItems.map((item) => `- ${item}`).join('\n')}`;
-}
-
-function extractPathsFromDiffText(diffText?: string): string[] {
-  if (!diffText) return [];
-  const matches = diffText.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm);
-  const paths = new Set<string>();
-  for (const match of matches) {
-    const candidate = (match[2] || match[1] || '').trim();
-    if (candidate) paths.add(candidate);
-  }
-  return Array.from(paths);
-}
-
-function getJobLatestAppliedSeq(job: Job): number {
-  const sequences = (job.stepSnapshots || []).map((step) => step.appliedSeq);
-  if (sequences.length > 0) return Math.max(...sequences);
-  const completedAt = job.completedAt ? new Date(job.completedAt).getTime() : 0;
-  return completedAt > 0 ? completedAt : Number.MAX_SAFE_INTEGER;
-}
-
-async function getOrderedCompletedJobsForBranch(project: Project, branch: string): Promise<OrderedCommitJob[]> {
-  const jobs = getJobs().filter(
-    (job) => job.projectId === project.id && job.branch === branch && job.status === 'completed',
-  );
-  const resolved: OrderedCommitJob[] = [];
-
-  for (const job of jobs) {
-    let message = sanitizeCommitLine(job.generatedCommitMessage);
-    let diffText = job.diffText?.trim() || '';
-
-    if (!message) {
-      diffText = diffText || await buildStableJobDiff(project.path, job, job.stepSnapshots);
-      try {
-        message = await generateJobCommitMessage(project.path, job, diffText);
-      } catch {
-        message = fallbackCommitItem();
-      }
-
-      const updated = updateJob(job.id, {
-        diffText: diffText || undefined,
-        generatedCommitMessage: message,
-      });
-      if (updated) {
-        message = sanitizeCommitLine(updated.generatedCommitMessage) || message;
-      }
-    }
-
-    resolved.push({
-      job,
-      sortSeq: getJobLatestAppliedSeq(job),
-      message,
-    });
-  }
-
-  return resolved
-    .filter((entry) => Boolean(entry.message))
-    .sort((left, right) => {
-      if (left.sortSeq !== right.sortSeq) return left.sortSeq - right.sortSeq;
-      const leftCompleted = left.job.completedAt ? new Date(left.job.completedAt).getTime() : 0;
-      const rightCompleted = right.job.completedAt ? new Date(right.job.completedAt).getTime() : 0;
-      if (leftCompleted !== rightCompleted) return leftCompleted - rightCompleted;
-      return left.job.createdAt.localeCompare(right.job.createdAt);
-    });
+async function resolveCommitBranch(project: Project, branch?: string): Promise<string | null> {
+  if (branch) return branch;
+  const branches = await listBranches(project.path);
+  return branches?.current || null;
 }
 
 async function buildStableJobDiff(projectPath: string, job: Job, stepSnapshots?: Job['stepSnapshots']): Promise<string> {
@@ -473,173 +286,7 @@ async function buildStableJobDiff(projectPath: string, job: Job, stepSnapshots?:
 
   if (job.diffText?.trim()) return job.diffText.trim();
 
-  const snapshots = job.gitSnapshots || [];
-  if (snapshots.length > 0) {
-    const liveDiff = await getDiff(projectPath, snapshots[0]);
-    if (liveDiff.trim()) return liveDiff.trim();
-  }
-
   return '';
-}
-
-async function generateJobCommitMessage(projectPath: string, job: Job, diffText: string): Promise<string> {
-  const normalizedDiff = diffText.trim();
-  if (!normalizedDiff) return fallbackCommitItem();
-
-  const config = getPromptConfig('commit');
-  const raw = await runClaudePrint(
-    projectPath,
-    buildPerJobCommitPrompt(config, job, normalizedDiff),
-    { model: config.model, effort: config.effort },
-  );
-  return sanitizeCommitLine(raw) || fallbackCommitItem();
-}
-
-async function generateExtraCommitItems(projectPath: string, diffText: string): Promise<string[]> {
-  const normalizedDiff = diffText.trim();
-  if (!normalizedDiff) return [];
-
-  const config = getPromptConfig('commit');
-  const raw = await runClaudePrint(
-    projectPath,
-    buildExtraCommitItemsPrompt(config, normalizedDiff),
-    { model: config.model, effort: config.effort },
-  );
-  const lines = parseCommitListLines(raw);
-  return lines.length > 0 ? lines : [fallbackExtraCommitItem()];
-}
-
-async function generateCombinedCommitSubject(projectPath: string, items: string[]): Promise<string> {
-  const cleanItems = items.map((item) => sanitizeCommitLine(item)).filter(Boolean);
-  if (cleanItems.length === 0) return fallbackCommitSubject();
-
-  const config = getPromptConfig('commit');
-  const raw = await runClaudePrint(
-    projectPath,
-    buildCommitSubjectPrompt(config, cleanItems),
-    { model: config.model, effort: config.effort },
-  );
-  return sanitizeCommitLine(raw) || cleanItems[0] || fallbackCommitSubject();
-}
-
-async function buildUncategorizedDiff(project: Project, orderedJobs: OrderedCommitJob[]): Promise<string> {
-  const exactCoveredStates = new Map<string, FileState>();
-  const opaqueCoveredPaths = new Set<string>();
-  const sortedSteps = orderedJobs
-    .flatMap(({ job }) =>
-      (job.stepSnapshots || []).map((step) => ({
-        step,
-        job,
-      })),
-    )
-    .sort((left, right) => {
-      if (left.step.appliedSeq !== right.step.appliedSeq) return left.step.appliedSeq - right.step.appliedSeq;
-      return left.step.completedAt.localeCompare(right.step.completedAt);
-    });
-
-  for (const { step } of sortedSteps) {
-    for (const file of step.files) {
-      exactCoveredStates.set(file.path, fileSnapshotAfterState(file));
-    }
-  }
-
-  for (const { job } of orderedJobs) {
-    if ((job.stepSnapshots?.length ?? 0) > 0) continue;
-    for (const filePath of new Set([...(job.editedFiles || []), ...extractPathsFromDiffText(job.diffText)])) {
-      opaqueCoveredPaths.add(filePath);
-    }
-  }
-
-  const changedFiles = await listChangedFiles(project.path);
-  if (changedFiles.length === 0) return '';
-
-  const currentStates = await readCurrentStates(project.path, changedFiles);
-  const diffEntries: Array<{ path: string; before: FileState; after: FileState }> = [];
-
-  for (const filePath of changedFiles) {
-    const currentState = currentStates.get(filePath) || { exists: false, isBinary: false };
-    const coveredState = exactCoveredStates.get(filePath);
-
-    if (coveredState) {
-      if (!fileStatesEqual(coveredState, currentState)) {
-        diffEntries.push({ path: filePath, before: coveredState, after: currentState });
-      }
-      continue;
-    }
-
-    if (opaqueCoveredPaths.has(filePath)) continue;
-
-    const headState = await readHeadFileState(project.path, filePath);
-    if (!fileStatesEqual(headState, currentState)) {
-      diffEntries.push({ path: filePath, before: headState, after: currentState });
-    }
-  }
-
-  return buildDiffFromEntries(diffEntries);
-}
-
-async function computeBranchCommitInputs(project: Project, branch: string): Promise<BranchCommitInputs> {
-  const orderedJobs = await getOrderedCompletedJobsForBranch(project, branch);
-  const perJobItems = orderedJobs.map((entry) => entry.message);
-  const uncategorizedDiff = await buildUncategorizedDiff(project, orderedJobs);
-  return {
-    perJobItems,
-    uncategorizedDiff,
-    fingerprint: hashText(JSON.stringify({
-      branch,
-      jobs: orderedJobs.map((entry) => ({
-        id: entry.job.id,
-        sortSeq: entry.sortSeq,
-        message: entry.message,
-      })),
-      uncategorizedDiff,
-    })),
-  };
-}
-
-async function computeBranchCommitMessage(project: Project, branch: string, inputs?: BranchCommitInputs): Promise<CommitMessageCacheEntry> {
-  const resolvedInputs = inputs || await computeBranchCommitInputs(project, branch);
-  const extraItems = resolvedInputs.uncategorizedDiff
-    ? await generateExtraCommitItems(project.path, resolvedInputs.uncategorizedDiff)
-    : [];
-  const items = [...resolvedInputs.perJobItems, ...extraItems];
-  const subject = await generateCombinedCommitSubject(project.path, items);
-  const omitSingleItemBody = resolvedInputs.perJobItems.length === 1 && extraItems.length === 0;
-
-  return {
-    fingerprint: resolvedInputs.fingerprint,
-    message: buildCommitMessage(subject, items, { omitSingleItemBody }),
-  };
-}
-
-async function getOrGenerateBranchCommitMessage(projectId: string, branch: string): Promise<string> {
-  const project = getProjects().find((candidate) => candidate.id === projectId);
-  if (!project) throw new Error('Project not found');
-
-  const inputs = await computeBranchCommitInputs(project, branch);
-  const cacheKey = commitCacheKey(projectId, branch);
-  const cached = commitMessageCache.get(cacheKey);
-  if (cached?.fingerprint === inputs.fingerprint) {
-    return cached.message;
-  }
-
-  const nextEntry = await computeBranchCommitMessage(project, branch, inputs);
-  commitMessageCache.set(cacheKey, nextEntry);
-  return nextEntry.message;
-}
-
-async function generateAndCacheBranchCommitMessage(projectId: string, branch: string): Promise<void> {
-  try {
-    await getOrGenerateBranchCommitMessage(projectId, branch);
-  } catch {
-    // Best-effort
-  }
-}
-
-async function resolveCommitBranch(project: Project, branch?: string): Promise<string | null> {
-  if (branch) return branch;
-  const branches = await listBranches(project.path);
-  return branches?.current || null;
 }
 
 async function startClaudeSession(
@@ -693,8 +340,8 @@ async function startClaudeSession(
     phase,
     sessionId,
     images: job.images,
-    model: effectiveModel !== 'default' ? effectiveModel : undefined,
-    effort: effectiveEffort !== 'default' ? effectiveEffort : undefined,
+    model: effectiveModel,
+    effort: effectiveEffort,
     permissionMode: settings.permissionMode,
   });
 
@@ -716,6 +363,34 @@ async function startClaudeSession(
     void stepHistoryTracker.recordToolCall(job.id, project.path, payload);
   });
 
+  session.on('user-message-uuid', (uuid: string) => {
+    const current = getJob(job.id);
+    if (current) {
+      const uuids = [...(current.userMessageUuids || []), uuid];
+      updateJob(job.id, { userMessageUuids: uuids });
+    }
+  });
+
+  session.on('supported-models', (models: DynamicModelInfo[]) => {
+    if (models?.length && !cachedDynamicModels) {
+      cachedDynamicModels = models;
+      sendToRenderer(getWindow, 'models:updated', buildModelCatalog(models));
+    }
+  });
+
+  session.on('skills', (skills: Skill[]) => {
+    if (skills.length > 0) {
+      sdkSkillsCache.set(project.path, skills);
+    }
+  });
+
+  session.on('account-info', (info: AccountInfo) => {
+    if (info && !cachedAccountInfo) {
+      cachedAccountInfo = info;
+      sendToRenderer(getWindow, 'account:updated', info);
+    }
+  });
+
   session.on('needs-input', (question: PendingQuestion) => {
     const updated = updateJob(job.id, {
       status: 'waiting-input',
@@ -729,41 +404,9 @@ async function startClaudeSession(
     }
   });
 
-  session.on('user-question', () => {
-    console.log('[ipc-handlers] AskUserQuestion detected — killing session to wait for user answer');
-    sessionManager.kill(job.id);
-  });
-
-  session.on('permission-denied', ({ message, deniedTools }: { message: string; deniedTools: string[] }) => {
-    console.log('[ipc-handlers] Permission denied — killing session, prompting user. Tools:', deniedTools);
-    // Kill immediately to prevent wasteful retries
-    sessionManager.kill(job.id);
-
-    const toolList = deniedTools.length > 0 ? deniedTools.join(', ') : 'unknown tool';
-    const question: PendingQuestion = {
-      questionId: `perm-${Date.now()}`,
-      text: `Claude needs permission to use: ${toolList}`,
-      header: 'Permission Required',
-      options: [
-        { label: 'Allow', description: `Grant ${toolList} for this session and retry` },
-        { label: 'Deny', description: 'Cancel this operation' },
-      ],
-      isPermissionRequest: true,
-      deniedTools,
-      timestamp: new Date().toISOString(),
-    };
-
-    const updated = updateJob(job.id, {
-      status: 'waiting-input',
-      pendingQuestion: question,
-      waitingStartedAt: new Date().toISOString(),
-    });
-    if (updated) {
-      sendToRenderer(getWindow, 'job:status-changed', updated);
-      sendToRenderer(getWindow, 'job:needs-input', { jobId: job.id, question });
-      notifyInputNeeded(job.id, project.name, job.title || job.prompt, question.text, getWindow);
-    }
-  });
+  // AskUserQuestion and permission prompts are now handled inline by the SDK's
+  // canUseTool callback. The session emits 'needs-input' and blocks until
+  // sendResponse() is called — no need to kill/restart the session.
 
   session.on('plan-text', (text: string) => {
     const updated = updateJob(job.id, { planText: text });
@@ -779,7 +422,7 @@ async function startClaudeSession(
     }
   });
 
-  let planReadyPromise: Promise<void> | null = null;
+  let planReadyPromise: Promise<Job | undefined> | null = null;
 
   session.on('plan-complete', () => {
     if (phase === 'plan') {
@@ -842,7 +485,6 @@ async function startClaudeSession(
         pendingQuestion: undefined,
         completedAt: new Date().toISOString(),
         diffText: diffText || undefined,
-        generatedCommitMessage: undefined,
         editedFiles: editedFiles.length > 0 ? editedFiles : undefined,
         stepSnapshots: nextStepSnapshots,
         [tokenField]: mergedTokens,
@@ -851,26 +493,6 @@ async function startClaudeSession(
         sendToRenderer(getWindow, 'job:status-changed', updated);
         sendToRenderer(getWindow, 'job:complete', { jobId: job.id });
         notifyJobComplete(job.id, project.name, job.title || job.prompt, getWindow);
-
-        void (async () => {
-          try {
-            const commitMessage = await generateJobCommitMessage(project.path, updated, diffText);
-            const refreshed = updateJob(job.id, { generatedCommitMessage: commitMessage });
-            if (refreshed) {
-              sendToRenderer(getWindow, 'job:status-changed', refreshed);
-            }
-          } catch {
-            const refreshed = updateJob(job.id, { generatedCommitMessage: fallbackCommitItem() });
-            if (refreshed) {
-              sendToRenderer(getWindow, 'job:status-changed', refreshed);
-            }
-          } finally {
-            if (updated.branch && projectIsGitRepo(project)) {
-              invalidateCommitMessageCache(updated.projectId, updated.branch);
-              void generateAndCacheBranchCommitMessage(updated.projectId, updated.branch);
-            }
-          }
-        })();
       }
     } else {
       if (planReadyPromise) {
@@ -919,41 +541,74 @@ function buildPromptText(config: PromptConfig, extra?: string): string {
   return config.prompt + (config.suffix || '') + (extra || '');
 }
 
-function runClaudePrint(projectPath: string, prompt: string, options?: { model?: string; effort?: string }): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const { spawn } = require('child_process') as typeof import('child_process');
-    const args = ['-p'];
-    const model = options?.model && options.model !== 'default' ? options.model : 'haiku';
-    args.push('--model', model);
-    if (options?.effort && options.effort !== 'default') {
-      args.push('--effort', options.effort);
-    }
-    const child = spawn('claude', args, {
-      cwd: projectPath,
-      env: { ...process.env, FORCE_COLOR: '0' },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+/**
+ * Run a one-shot SDK query with structured JSON output.
+ * Returns the parsed structured_output from the result message.
+ */
+async function runClaudeStructured<T>(
+  projectPath: string,
+  prompt: string,
+  schema: Record<string, unknown>,
+  options?: { model?: string; effort?: string },
+): Promise<T | null> {
+  const env = { ...process.env };
+  delete env.CLAUDECODE;
 
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-    child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sdkOptions: Record<string, any> = {
+    cwd: projectPath,
+    env,
+    permissionMode: 'plan',
+    settingSources: ['user', 'project'],
+    outputFormat: { type: 'json_schema', schema },
+  };
 
-    child.on('error', reject);
-    child.on('close', (code: number | null) => {
-      if (code === 0) {
-        resolve(stdout.trim());
-      } else {
-        reject(new Error(`claude exited with code ${code}: ${stderr}`));
+  sdkOptions.model = options?.model || 'haiku';
+  sdkOptions.effort = options?.effort || 'low';
+
+  for await (const msg of sdkQuery({ prompt, options: sdkOptions })) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = msg as any;
+    if (m.type === 'result') {
+      if (m.subtype === 'success') {
+        if (m.structured_output != null) {
+          return m.structured_output as T;
+        }
+        // Fallback: try parsing the text result as JSON
+        const text = (m.result as string)?.trim();
+        if (text) {
+          try { return JSON.parse(text) as T; } catch { /* not JSON */ }
+        }
+        return null;
+      } else if (m.subtype?.startsWith('error')) {
+        throw new Error(`Claude query failed: ${m.result || m.subtype}`);
       }
-    });
-
-    child.stdin.write(prompt);
-    child.stdin.end();
-  });
+    }
+  }
+  return null;
 }
 
-function runClaudeEditTask(
+// --- Structured output schemas ---
+
+const SINGLE_LINE_SCHEMA = {
+  type: 'object',
+  properties: {
+    message: { type: 'string', description: 'A single concise conventional-commit message line' },
+  },
+  required: ['message'],
+  additionalProperties: false,
+} as const;
+
+const TITLE_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string', description: 'A very short task title (3-8 words), no quotes or punctuation at the end' },
+  },
+  required: ['title'],
+  additionalProperties: false,
+} as const;
+
+async function runClaudeEditTask(
   projectPath: string,
   prompt: string,
   options?: {
@@ -962,47 +617,81 @@ function runClaudeEditTask(
     permissionMode?: PermissionMode;
   },
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const { spawn } = require('child_process') as typeof import('child_process');
-    const args = ['-p'];
-    if ((options?.permissionMode ?? 'bypassPermissions') === 'bypassPermissions') {
-      args.push('--dangerously-skip-permissions');
+  const env = { ...process.env };
+  delete env.CLAUDECODE;
+
+  const bypassPermissions = (options?.permissionMode ?? 'bypassPermissions') === 'bypassPermissions';
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sdkOptions: Record<string, any> = {
+    cwd: projectPath,
+    env,
+    permissionMode: bypassPermissions ? 'bypassPermissions' : 'default',
+    allowDangerouslySkipPermissions: bypassPermissions,
+    settingSources: ['user', 'project'],
+  };
+
+  if (options?.model) {
+    sdkOptions.model = options.model;
+  }
+  if (options?.effort) {
+    sdkOptions.effort = options.effort;
+  }
+
+  let result = '';
+  for await (const msg of sdkQuery({ prompt, options: sdkOptions })) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = msg as any;
+    if (m.type === 'result' && m.subtype === 'success') {
+      result = (m.result as string) || '';
+    } else if (m.type === 'result' && m.subtype?.startsWith('error')) {
+      throw new Error(`Claude query failed: ${m.result || m.subtype}`);
     }
-    if (options?.model && options.model !== 'default') {
-      args.push('--model', options.model);
+  }
+  return result.trim();
+}
+
+/**
+ * Resume a completed session to call rewindFiles().
+ * Opens a temporary SDK session with the original sessionId, calls rewind, then closes.
+ */
+async function rewindViaResume(
+  projectPath: string,
+  sessionId: string,
+  userMessageId: string,
+  options?: { dryRun?: boolean },
+): Promise<{ canRewind: boolean; error?: string; filesChanged?: string[]; insertions?: number; deletions?: number }> {
+  const env = { ...process.env };
+  delete env.CLAUDECODE;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sdkOptions: Record<string, any> = {
+    cwd: projectPath,
+    permissionMode: 'plan',
+    enableFileCheckpointing: true,
+    resume: sessionId,
+    env,
+    settingSources: ['user', 'project'],
+  };
+
+  let q;
+  try {
+    q = sdkQuery({ prompt: '', options: sdkOptions });
+    const result = await q.rewindFiles(userMessageId, options);
+    return result;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { canRewind: false, error: msg };
+  } finally {
+    if (q) {
+      try { q.close(); } catch { /* already closed */ }
     }
-    if (options?.effort && options.effort !== 'default') {
-      args.push('--effort', options.effort);
-    }
-
-    const child = spawn('claude', args, {
-      cwd: projectPath,
-      env: { ...process.env, FORCE_COLOR: '0' },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-    child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-
-    child.on('error', reject);
-    child.on('close', (code: number | null) => {
-      if (code === 0) {
-        resolve(stdout.trim());
-      } else {
-        reject(new Error(`claude exited with code ${code}: ${stderr || stdout}`));
-      }
-    });
-
-    child.stdin.write(prompt);
-    child.stdin.end();
-  });
+  }
 }
 
 /**
  * Shared rollback logic used by both reject-job and delete-with-rollback.
- * Decides between git fast-path and model-assisted rollback, then cleans up snapshot refs.
+ * Uses SDK rewindFiles() as primary mechanism, model-assisted rollback as fallback.
  */
 async function rollbackJobToSnapshot(
   job: Job,
@@ -1010,10 +699,10 @@ async function rollbackJobToSnapshot(
   targetIndex: number,
   allJobs: Job[],
 ): Promise<void> {
-  const snapshots = job.gitSnapshots || [];
   const stepSnapshots = job.stepSnapshots || [];
+  const userMessageUuids = job.userMessageUuids || [];
 
-  if (stepSnapshots.length === 0 && snapshots.length === 0) {
+  if (stepSnapshots.length === 0 && userMessageUuids.length === 0) {
     return; // nothing to roll back
   }
 
@@ -1025,20 +714,23 @@ async function rollbackJobToSnapshot(
     throw new Error('Cannot roll back while another job on this project is running');
   }
 
-  const targetLabel = snapshots[targetIndex]?.label || (targetIndex === 0 ? 'Original' : getStepLabel(targetIndex));
-  const latestAppliedSeq = getLatestProjectAppliedSeq(allJobs, job.projectId);
-  const canUseGitFastPath =
-    snapshots.length > targetIndex &&
-    (stepSnapshots.length === 0 || stepSnapshots[stepSnapshots.length - 1]?.appliedSeq === latestAppliedSeq);
+  const targetLabel = targetIndex === 0 ? 'Original' : getStepLabel(targetIndex);
 
-  if (canUseGitFastPath && snapshots.length > targetIndex) {
-    await restoreSnapshot(project.path, snapshots[targetIndex]);
-  } else if (stepSnapshots.length > 0) {
-    await rollbackWithModel(job, project.path, targetIndex, targetLabel);
+  // Primary: try SDK rewindFiles() via session resume
+  if (job.sessionId && userMessageUuids.length > targetIndex) {
+    const targetUuid = userMessageUuids[targetIndex];
+    console.log(`[rollback] SDK rewind: sessionId=${job.sessionId}, targetUuid=${targetUuid}, targetIndex=${targetIndex}`);
+    const result = await rewindViaResume(project.path, job.sessionId, targetUuid);
+    if (result.canRewind) {
+      console.log(`[rollback] SDK rewind succeeded:`, result);
+      return;
+    }
+    console.log(`[rollback] SDK rewind failed, falling back to model-assisted:`, result.error);
   }
 
-  if (snapshots.length > 0) {
-    await cleanupAllSnapshots(project.path, snapshots);
+  // Fallback: model-assisted rollback using step snapshots
+  if (stepSnapshots.length > 0) {
+    await rollbackWithModel(job, project.path, targetIndex, targetLabel);
   }
 }
 
@@ -1070,30 +762,18 @@ async function rollbackWithModel(job: Job, projectPath: string, targetIndex: num
     return;
   }
 
-  const guardSnapshot = await captureSnapshot(projectPath, `${job.id}-rollback-guard`, Date.now(), 'Rollback guard');
   const config = getPromptConfig('rollback');
   const prompt = buildPromptText(config, `\n\n${serializeRollbackContext(rollbackPlan.targets, targetLabel)}`);
 
-  try {
-    const settings = getSettings();
-    await runClaudeEditTask(projectPath, prompt, {
-      model: config.model,
-      effort: config.effort,
-      permissionMode: settings.permissionMode,
-    });
-    const valid = await validateRollbackTargets(projectPath, rollbackPlan.targets);
-    if (!valid) {
-      throw new Error('Rollback output did not match the requested target state');
-    }
-  } catch (error) {
-    if (guardSnapshot) {
-      await restoreSnapshot(projectPath, guardSnapshot);
-    }
-    throw error;
-  } finally {
-    if (guardSnapshot) {
-      await cleanupAllSnapshots(projectPath, [guardSnapshot]);
-    }
+  const settings = getSettings();
+  await runClaudeEditTask(projectPath, prompt, {
+    model: config.model,
+    effort: config.effort,
+    permissionMode: settings.permissionMode,
+  });
+  const valid = await validateRollbackTargets(projectPath, rollbackPlan.targets);
+  if (!valid) {
+    throw new Error('Rollback output did not match the requested target state');
   }
 }
 
@@ -1112,8 +792,14 @@ async function generateTitleInBackground(
       titlePrompt += `Context: ${context}\n\n`;
     }
     titlePrompt += `Task: ${prompt}`;
-    const title = await runClaudePrint(projectPath, titlePrompt, { model: config.model, effort: config.effort });
-    if (!title?.trim()) return;
+    const result = await runClaudeStructured<{ title: string }>(
+      projectPath,
+      titlePrompt,
+      TITLE_SCHEMA,
+      { model: config.model, effort: config.effort },
+    );
+    const title = result?.title?.trim();
+    if (!title) return;
 
     const current = getJob(jobId);
     if (!current) return;
@@ -1121,16 +807,16 @@ async function generateTitleInBackground(
     if (followUpIndex !== undefined) {
       const followUps = [...(current.followUps || [])];
       if (followUps[followUpIndex]) {
-        followUps[followUpIndex] = { ...followUps[followUpIndex], title: title.trim() };
+        followUps[followUpIndex] = { ...followUps[followUpIndex], title };
         const updated = updateJob(jobId, { followUps });
         if (updated) sendToRenderer(getWindow, 'job:status-changed', updated);
       }
     } else {
-      const updated = updateJob(jobId, { title: title.trim() });
+      const updated = updateJob(jobId, { title });
       if (updated) sendToRenderer(getWindow, 'job:status-changed', updated);
     }
-  } catch {
-    // Best-effort
+  } catch (err) {
+    console.error('[generateTitleInBackground] Failed:', err);
   }
 }
 
@@ -1151,12 +837,15 @@ function registerDemoHandlers(): void {
     'files:list',
     'jobs:create', 'jobs:cancel', 'jobs:delete', 'jobs:retry', 'jobs:respond', 'jobs:steer',
     'jobs:accept-plan', 'jobs:edit-plan', 'jobs:follow-up', 'jobs:get-diff', 'jobs:reject-job',
+    'jobs:rewind-preview', 'jobs:rewind-files', 'jobs:rewind-messages',
     'images:save',
     'claudemd:read', 'claudemd:init', 'claudemd:write',
     'cli:start-login', 'cli:login-write', 'cli:login-kill',
     'shell:open-external',
     'settings:update',
     'skills:list',
+    'models:list',
+    'account:info',
   ];
   for (const channel of noOpChannels) {
     ipcMain.handle(channel, () => null);
@@ -1412,23 +1101,22 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
         }
       }
 
-      invalidateCommitMessageCache(projectId, targetBranch || undefined);
       return { success: true, sha, deletedJobIds, warning };
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
-  ipcMain.handle('git:generate-commit-message', async (_event, projectId: string, branch?: string) => {
+  ipcMain.handle('git:generate-commit-message', async (_event, projectId: string, _branch?: string) => {
     const project = getProjects().find(p => p.id === projectId);
     if (!project) throw new Error('Project not found');
-    const targetBranch = await resolveCommitBranch(project, branch);
-    if (!targetBranch) {
-      const config = getPromptConfig('commit');
-      const prompt = buildPromptText(config);
-      return runClaudePrint(project.path, prompt, { model: config.model, effort: config.effort });
-    }
-    return getOrGenerateBranchCommitMessage(projectId, targetBranch);
+    const config = getPromptConfig('commit');
+    const prompt = buildPromptText(config);
+    const result = await runClaudeStructured<{ message: string }>(
+      project.path, prompt, SINGLE_LINE_SCHEMA,
+      { model: config.model, effort: config.effort },
+    );
+    return result?.message?.trim() || 'chore: update project';
   });
 
   // === Files ===
@@ -1468,20 +1156,14 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
         : { planningStartedAt: now }),
       ...(images && images.length > 0 ? { images } : {}),
       ...(branch ? { branch } : {}),
-      ...(model && model !== 'default' ? { model } : {}),
-      ...(effort && effort !== 'default' ? { effort } : {}),
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
       outputLog: [],
       rawMessages: [],
     };
 
-    // Capture git snapshot before dev phase (skip-planning jobs go straight to dev, git repos only)
     if (skipPlanning) {
-      const project = getProjects().find(p => p.id === projectId);
-      if (project && projectIsGitRepo(project)) {
-        const snapshot = await captureSnapshot(project.path, job.id, 0, 'Original');
-        if (snapshot) job.gitSnapshots = [snapshot];
-      }
-      stepHistoryTracker.startStep(job.id, getStepLabel(0), 0, job.gitSnapshots?.length ? 0 : undefined);
+      stepHistoryTracker.startStep(job.id, getStepLabel(0), 0);
     }
 
     saveJob(job);
@@ -1530,22 +1212,13 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     sessionManager.kill(jobId);
     stepHistoryTracker.discardStep(jobId);
     const job = getJob(jobId);
-    if (job?.branch) {
-      invalidateCommitMessageCache(job.projectId, job.branch);
-    }
 
-    if (options?.rollback && job?.gitSnapshots?.length) {
-      // Roll back changes using the same strategy as reject-job
+    if (options?.rollback && job) {
+      // Roll back changes using SDK rewind, with model-assisted fallback
       const project = getProjects().find(p => p.id === job.projectId);
       if (!project) throw new Error('Project not found');
       const allJobs = getJobs();
       await rollbackJobToSnapshot(job, project, 0, allJobs);
-    } else if (job?.gitSnapshots?.length) {
-      // Just clean up snapshot refs without restoring
-      const project = getProjects().find(p => p.id === job.projectId);
-      if (project) {
-        await cleanupAllSnapshots(project.path, job.gitSnapshots);
-      }
     }
 
     deleteJob(jobId);
@@ -1596,21 +1269,16 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
       waitingStartedAt: undefined,
       completedAt: undefined,
       diffText: undefined,
-      generatedCommitMessage: undefined,
       ...elapsedUpdate,
       outputLog,
     });
 
     if (updated) {
-      if (job.branch) {
-        invalidateCommitMessageCache(job.projectId, job.branch);
-      }
       if (phase === 'dev') {
         stepHistoryTracker.startStep(
           jobId,
           getStepLabel((job.stepSnapshots || []).length),
           (job.stepSnapshots || []).length,
-          job.gitSnapshots ? (job.stepSnapshots || []).length : undefined,
         );
       }
       sendToRenderer(getWindow, 'job:status-changed', updated);
@@ -1624,105 +1292,51 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     const current = getJob(jobId);
     if (!current) return;
 
-    // Handle permission request responses — session was killed, need to restart
-    if (current.pendingQuestion?.isPermissionRequest) {
-      const isAllowed = response.toLowerCase().includes('allow');
-
-      let totalPausedMs = current.totalPausedMs || 0;
-      if (current.waitingStartedAt) {
-        totalPausedMs += Date.now() - new Date(current.waitingStartedAt).getTime();
-      }
-
-      if (isAllowed) {
-        const deniedTools = current.pendingQuestion.deniedTools || [];
-        const phase = current.column === 'planning' ? 'plan' as const : 'dev' as const;
-        const outputLog = getOutputLog(jobId);
-        outputLog.push({
-          timestamp: new Date().toISOString(),
-          type: 'system',
-          content: `Permission granted for ${deniedTools.join(', ')} — resuming session...`,
-        });
-
-        const updated = updateJob(jobId, {
-          status: 'running',
-          pendingQuestion: undefined,
-          waitingStartedAt: undefined,
-          totalPausedMs,
-          outputLog,
-        });
-        if (updated) {
-          sendToRenderer(getWindow, 'job:status-changed', updated);
-        }
-
-        // Resume with the denied tools added to --allowedTools
-        await startClaudeSession(
-          { ...current, ...updated } as Job,
-          getWindow,
-          batchedSender,
-          phase,
-          current.sessionId, // resume the same session
-          'The required permissions have been granted. Please retry the operation that was previously denied.',
-        );
-      } else {
-        const updated = updateJob(jobId, {
-          status: 'error',
-          error: 'Permission denied by user',
-          pendingQuestion: undefined,
-          waitingStartedAt: undefined,
-          totalPausedMs,
-        });
-        if (updated) {
-          sendToRenderer(getWindow, 'job:status-changed', updated);
-          sendToRenderer(getWindow, 'job:error', { jobId, error: updated.error! });
-        }
-      }
+    // With the SDK, the session stays alive during questions and permission prompts.
+    // sendResponse() resolves the canUseTool promise and the SDK continues.
+    const session = sessionManager.get(jobId);
+    if (!session) {
+      console.log('[ipc-handlers] jobs:respond — no active session for job', jobId);
       return;
     }
 
-    // Normal question response — forward to active session or resume if killed
     let totalPausedMs = current.totalPausedMs || 0;
     if (current.waitingStartedAt) {
       totalPausedMs += Date.now() - new Date(current.waitingStartedAt).getTime();
     }
 
-    const session = sessionManager.get(jobId);
-    if (session) {
-      session.sendResponse(response);
-
-      const updated = updateJob(jobId, {
-        status: 'running',
-        pendingQuestion: undefined,
-        waitingStartedAt: undefined,
-        totalPausedMs,
-      });
-      if (updated) {
-        sendToRenderer(getWindow, 'job:status-changed', updated);
+    // Log permission grants
+    if (current.pendingQuestion?.isPermissionRequest) {
+      const isAllowed = response.toLowerCase().includes('allow');
+      const deniedTools = current.pendingQuestion.deniedTools || [];
+      if (isAllowed) {
+        const outputLog = getOutputLog(jobId);
+        outputLog.push({
+          timestamp: new Date().toISOString(),
+          type: 'system',
+          content: `Permission granted for ${deniedTools.join(', ')}`,
+        });
+        updateJob(jobId, { outputLog });
       }
-    } else {
-      // Session was killed (e.g. AskUserQuestion) — resume with the user's answer
-      const phase = current.column === 'planning' ? 'plan' as const : 'dev' as const;
-      const updated = updateJob(jobId, {
-        status: 'running',
-        pendingQuestion: undefined,
-        waitingStartedAt: undefined,
-        totalPausedMs,
-      });
-      if (updated) {
-        sendToRenderer(getWindow, 'job:status-changed', updated);
-      }
+    }
 
-      await startClaudeSession(
-        { ...current, ...updated } as Job,
-        getWindow,
-        batchedSender,
-        phase,
-        current.sessionId,
-        response,
-      );
+    session.sendResponse(response);
+
+    const updated = updateJob(jobId, {
+      status: 'running',
+      pendingQuestion: undefined,
+      waitingStartedAt: undefined,
+      totalPausedMs,
+    });
+    if (updated) {
+      sendToRenderer(getWindow, 'job:status-changed', updated);
     }
   });
 
   ipcMain.handle('jobs:steer', async (_event, jobId: string, message: string) => {
+    const job = getJob(jobId);
+    if (!job) throw new Error('Job not found');
+
     const session = sessionManager.get(jobId);
     if (!session) throw new Error('No active session for this job');
 
@@ -1738,10 +1352,19 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
       sendToRenderer(getWindow, 'job:status-changed', updated);
     }
 
-    // Interrupt current generation then send the steer message
-    session.interrupt();
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    session.sendResponse(message);
+    // Kill current session and resume with the steer message
+    const sessionId = job.sessionId;
+    sessionManager.kill(jobId);
+
+    const phase = job.column === 'planning' ? 'plan' as const : 'dev' as const;
+    await startClaudeSession(
+      { ...job, ...updated } as Job,
+      getWindow,
+      batchedSender,
+      phase,
+      sessionId,
+      message,
+    );
   });
 
   ipcMain.handle('jobs:accept-plan', async (_event, jobId: string) => {
@@ -1834,18 +1457,7 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
 
     const now = new Date().toISOString();
     const followUps = [...(job.followUps || []), { prompt, timestamp: now }];
-    const followUpIndex = followUps.length;
-
-    // Capture snapshot before this follow-up (git repos only)
-    const snapshots = [...(job.gitSnapshots || [])];
     const project = getProjects().find(p => p.id === job.projectId);
-    if (project && projectIsGitRepo(project)) {
-      const label = followUpIndex === 1
-        ? 'After initial development'
-        : `After follow-up #${followUpIndex - 1}`;
-      const snapshot = await captureSnapshot(project.path, jobId, snapshots.length, label);
-      if (snapshot) snapshots.push(snapshot);
-    }
 
     const outputLog = getOutputLog(jobId);
     outputLog.push({
@@ -1872,21 +1484,15 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
       pendingQuestion: undefined,
       error: undefined,
       diffText: undefined,
-      generatedCommitMessage: undefined,
       followUps,
-      gitSnapshots: snapshots,
       outputLog,
     });
 
     if (updated) {
-      if (job.branch) {
-        invalidateCommitMessageCache(job.projectId, job.branch);
-      }
       stepHistoryTracker.startStep(
         jobId,
         getStepLabel((job.stepSnapshots || []).length),
         (job.stepSnapshots || []).length,
-        snapshots.length > 0 ? snapshots.length - 1 : undefined,
       );
       sendToRenderer(getWindow, 'job:status-changed', updated);
 
@@ -1958,13 +1564,58 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
       return buildStoredDiff(job.stepSnapshots);
     }
 
-    // Compute live diff from the first (original) snapshot
-    const snapshots = job.gitSnapshots || [];
-    if (snapshots.length === 0) return null;
-    const project = getProjects().find(p => p.id === job.projectId);
-    if (!project) return null;
+    return null;
+  });
 
-    return getDiff(project.path, snapshots[0]);
+  // === File Rewind (SDK checkpointing) ===
+
+  ipcMain.handle('jobs:rewind-preview', async (_event, jobId: string, userMessageId?: string) => {
+    const session = sessionManager.get(jobId);
+    if (session) {
+      const messages = session.userMessages;
+      const targetId = userMessageId || messages[0];
+      if (!targetId) return { canRewind: false, error: 'No user messages to rewind to' };
+      return session.rewindFiles(targetId, { dryRun: true });
+    }
+
+    // Fallback: resume completed session for rewind preview
+    const job = getJob(jobId);
+    if (!job?.sessionId) return { canRewind: false, error: 'No session to rewind' };
+    const uuids = job.userMessageUuids || [];
+    const targetId = userMessageId || uuids[0];
+    if (!targetId) return { canRewind: false, error: 'No user messages to rewind to' };
+    const project = getProjects().find(p => p.id === job.projectId);
+    if (!project) return { canRewind: false, error: 'Project not found' };
+    return rewindViaResume(project.path, job.sessionId, targetId, { dryRun: true });
+  });
+
+  ipcMain.handle('jobs:rewind-files', async (_event, jobId: string, userMessageId?: string) => {
+    const session = sessionManager.get(jobId);
+    if (session) {
+      const messages = session.userMessages;
+      const targetId = userMessageId || messages[0];
+      if (!targetId) return { canRewind: false, error: 'No user messages to rewind to' };
+      return session.rewindFiles(targetId);
+    }
+
+    // Fallback: resume completed session for rewind
+    const job = getJob(jobId);
+    if (!job?.sessionId) return { canRewind: false, error: 'No session to rewind' };
+    const uuids = job.userMessageUuids || [];
+    const targetId = userMessageId || uuids[0];
+    if (!targetId) return { canRewind: false, error: 'No user messages to rewind to' };
+    const project = getProjects().find(p => p.id === job.projectId);
+    if (!project) return { canRewind: false, error: 'Project not found' };
+    return rewindViaResume(project.path, job.sessionId, targetId);
+  });
+
+  ipcMain.handle('jobs:rewind-messages', async (_event, jobId: string) => {
+    const session = sessionManager.get(jobId);
+    if (session) return session.userMessages;
+
+    // Fallback: return persisted UUIDs for completed jobs
+    const job = getJob(jobId);
+    return job?.userMessageUuids || [];
   });
 
   // === Settings ===
@@ -2016,10 +1667,42 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     return updated;
   });
 
+  // === Models ===
+  ipcMain.handle('models:list', () => {
+    if (cachedDynamicModels) {
+      return buildModelCatalog(cachedDynamicModels);
+    }
+    return MODEL_CATALOG;
+  });
+
   // === Skills ===
   ipcMain.handle('skills:list', (_event, projectId?: string) => {
     const project = projectId ? getProjects().find(p => p.id === projectId) : undefined;
+
+    // Use SDK-provided skills when available (more consistent with the running session)
+    if (project?.path && sdkSkillsCache.has(project.path)) {
+      return sdkSkillsCache.get(project.path)!;
+    }
+
+    // Fallback to filesystem scan
     return listSkills(project?.path);
+  });
+
+  // === Account Info ===
+  // Eagerly fetch at startup
+  void fetchAccountInfo().then((info) => {
+    if (info) {
+      cachedAccountInfo = info;
+      sendToRenderer(getWindow, 'account:updated', info);
+    }
+  });
+
+  ipcMain.handle('account:info', async () => {
+    if (cachedAccountInfo) return cachedAccountInfo;
+    // Lazy fetch if not yet cached
+    const info = await fetchAccountInfo();
+    if (info) cachedAccountInfo = info;
+    return info;
   });
 
   // === Theme ===
@@ -2037,27 +1720,26 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     if (!job) throw new Error('Job not found');
     if (job.status !== 'completed') throw new Error('Job is not completed');
 
-    const snapshots = job.gitSnapshots || [];
     const stepSnapshots = job.stepSnapshots || [];
+    const userMessageUuids = job.userMessageUuids || [];
 
-    // Non-git or legacy jobs without stored snapshots: just mark as rejected without rollback
-    if (stepSnapshots.length === 0 && snapshots.length === 0) {
+    // Jobs without stored snapshots or rewind points: just mark as rejected without rollback
+    if (stepSnapshots.length === 0 && userMessageUuids.length === 0) {
       const updated = updateJob(jobId, {
         status: 'rejected',
         rejectedAt: new Date().toISOString(),
       });
       if (updated) {
-        if (job.branch) {
-          invalidateCommitMessageCache(job.projectId, job.branch);
-        }
         sendToRenderer(getWindow, 'job:status-changed', updated);
       }
       return;
     }
 
-    // Default to first snapshot (original state) if no index specified
+    // Default to first (original state) if no index specified
     const targetIndex = snapshotIndex ?? 0;
-    const maxRollbackIndex = stepSnapshots.length > 0 ? stepSnapshots.length - 1 : snapshots.length - 1;
+    const maxRollbackIndex = stepSnapshots.length > 0
+      ? stepSnapshots.length - 1
+      : userMessageUuids.length - 1;
     if (targetIndex < 0 || targetIndex > maxRollbackIndex) {
       throw new Error('Invalid snapshot index');
     }
@@ -2075,12 +1757,8 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
       const updated = updateJob(jobId, {
         status: 'rejected',
         rejectedAt: new Date().toISOString(),
-        gitSnapshots: undefined,
       });
       if (updated) {
-        if (job.branch) {
-          invalidateCommitMessageCache(job.projectId, job.branch);
-        }
         sendToRenderer(getWindow, 'job:status-changed', updated);
       }
     } else {
@@ -2097,12 +1775,8 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
       const updated = updateJob(jobId, {
         stepSnapshots: updatedStepSnapshots,
         followUps: updatedFollowUps,
-        gitSnapshots: undefined,
       });
       if (updated) {
-        if (job.branch) {
-          invalidateCommitMessageCache(job.projectId, job.branch);
-        }
         sendToRenderer(getWindow, 'job:status-changed', updated);
       }
     }

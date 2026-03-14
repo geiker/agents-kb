@@ -3,7 +3,7 @@ import { useKanbanStore } from '../hooks/useKanbanStore';
 import { NotificationBadge } from './NotificationBadge';
 import { formatDuration, useNow } from '../utils/duration';
 import type { Job, JobStatus, FollowUp } from '../types/index';
-import { MODEL_CATALOG, EFFORT_CATALOG, getProjectColor } from '../types/index';
+import { EFFORT_CATALOG, getProjectColor } from '../types/index';
 import { BrainIcon } from './Icons';
 
 interface JobCardProps {
@@ -169,6 +169,7 @@ function getBadge(catalog: { value: string; badge: string }[], value: string): s
 
 function PhaseDurations({ job, now }: { job: Job; now: number }) {
   const settings = useKanbanStore((s) => s.settings);
+  const availableModels = useKanbanStore((s) => s.availableModels);
   const pausedMs = getEffectivePausedMs(job, now);
   const phases: { label: string; value: string; dotColor: string; active: boolean }[] = [];
 
@@ -206,7 +207,7 @@ function PhaseDurations({ job, now }: { job: Job; now: number }) {
   const showBadges = settings.alwaysShowModelEffort
     || effectiveModel !== settings.defaultModel
     || effectiveEffort !== settings.defaultEffort;
-  const modelLabel = getBadge(MODEL_CATALOG, effectiveModel) || (settings.alwaysShowModelEffort ? 'DEFAULT' : '');
+  const modelLabel = getBadge(availableModels, effectiveModel) || (settings.alwaysShowModelEffort ? 'DEFAULT' : '');
   const effortLabel = getBadge(EFFORT_CATALOG, effectiveEffort) || (settings.alwaysShowModelEffort ? 'DEFAULT' : '');
 
   if (phases.length === 0 && !showBadges) return null;
@@ -237,7 +238,7 @@ function PhaseDurations({ job, now }: { job: Job; now: number }) {
             </span>
           )}
           {effortLabel && (
-            <span className="flex items-center gap-1 text-content-tertiary" title={`Effort: ${effortLabel}`}>
+            <span className="flex items-center gap-1 text-content-tertiary" title={`Thinking: ${effortLabel}`}>
               <BrainIcon size={10} className="shrink-0 opacity-60" />
               <span className="text-[9px] font-bold tracking-[0.08em] uppercase">{effortLabel}</span>
             </span>

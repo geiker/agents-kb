@@ -5,7 +5,7 @@ import { useShortcut } from '../hooks/useShortcut';
 import { Kbd } from './Kbd';
 import { SegmentedPicker } from './SegmentedPicker';
 import { MentionTextarea } from './MentionInput';
-import { MODEL_CATALOG, EFFORT_CATALOG, getProjectColor } from '../types/index';
+import { EFFORT_CATALOG, getProjectColor } from '../types/index';
 import { XIcon } from './Icons';
 import type { ModelChoice, EffortLevel } from '../types/index';
 
@@ -21,6 +21,7 @@ export function NewJobDialog() {
   const setShowNewJobDialog = useKanbanStore((s) => s.setShowNewJobDialog);
   const filteredProjectId = useKanbanStore((s) => s.selectedProjectId);
   const settings = useKanbanStore((s) => s.settings);
+  const availableModels = useKanbanStore((s) => s.availableModels);
   const api = useElectronAPI();
 
   const [selectedProjectId, setSelectedProjectId] = useState(filteredProjectId || projects[0]?.id || '');
@@ -367,21 +368,21 @@ export function NewJobDialog() {
           </span>
         </div>
 
-        {/* Model & Effort */}
+        {/* Model & Thinking */}
         {settings.showModelEffortInNewJob && <div className="mb-6 space-y-3">
           <div className="flex items-center justify-between">
             <label className="text-xs font-medium text-content-secondary uppercase tracking-wider">
               Model
             </label>
             <SegmentedPicker
-              options={MODEL_CATALOG}
+              options={availableModels}
               value={selectedModel}
               onChange={(v) => setSelectedModel(v as ModelChoice)}
             />
           </div>
           <div className="flex items-center justify-between">
             <label className="text-xs font-medium text-content-secondary uppercase tracking-wider">
-              Effort
+              Thinking
             </label>
             <SegmentedPicker
               options={EFFORT_CATALOG}

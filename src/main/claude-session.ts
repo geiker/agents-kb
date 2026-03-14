@@ -1,11 +1,12 @@
-import * as nodePty from 'node-pty';
-import * as fs from 'fs';
-import * as path from 'path';
-import { EventEmitter } from 'events';
-import { v4 as uuidv4 } from 'uuid';
-import type { OutputEntry, PendingQuestion, QuestionOption, PermissionMode } from '../shared/types';
+import * as fs from "fs";
+import * as path from "path";
+import { EventEmitter } from "events";
+import { v4 as uuidv4 } from "uuid";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { PermissionResult, CanUseTool } from "@anthropic-ai/claude-agent-sdk";
+import type { OutputEntry, PendingQuestion, QuestionOption, PermissionMode, Skill } from "../shared/types";
 
-export type SessionPhase = 'plan' | 'dev';
+export type SessionPhase = "plan" | "dev";
 
 export interface ClaudeSessionOptions {
   jobId: string;
@@ -17,750 +18,440 @@ export interface ClaudeSessionOptions {
   model?: string;
   effort?: string;
   permissionMode?: PermissionMode;
+  allowedTools?: string[]; // tools explicitly granted by the user (e.g. after permission approval)
 }
+
+/** Tracks accumulated content from partial assistant messages for delta computation */
+interface ContentBlockSnapshot {
+  type: string;
+  textLength: number;
+  name?: string;
+}
+
+/** Pending tool block waiting for finalization */
+interface PendingToolBlock {
+  name: string;
+  id?: string;
+  input: Record<string, unknown>;
+  emittedStart: boolean;
+}
+
+/** Context for a pending canUseTool callback waiting for user input */
+interface PendingInputContext {
+  type: "question" | "permission";
+  toolInput: Record<string, unknown>;
+  toolName?: string;
+}
+
+/** Options passed to the canUseTool callback by the SDK */
+type CanUseToolOptions = Parameters<CanUseTool>[2];
 
 export class ClaudeSession extends EventEmitter {
   readonly jobId: string;
   sessionId: string;
-  private pty: nodePty.IPty | null = null;
-  private buffer = '';
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private queryInstance: any = null;
+  private abortController: AbortController;
   private killed = false;
-  private hasStderrContent = false;
-  private currentToolName = '';
-  private currentToolBuffer = '';
   private planEmitted = false;
-  private assistantTextBuffer = '';
-  private isAskingQuestion = false;
-  private pendingPlanFileRead = '';
-  private permissionDeniedEmitted = false;
-  /** Tools handled internally via streaming events — never treat as permission denials */
-  private static readonly INTERNAL_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
-  private toolUseIdToName = new Map<string, string>();
+  private assistantTextBuffer = "";
   private _inputTokens = 0;
   private _outputTokens = 0;
   private _currentMsgOutputTokens = 0;
+
+  // canUseTool resolution
+  private pendingInputResolve: ((result: PermissionResult) => void) | null = null;
+  private pendingInputContext: PendingInputContext | null = null;
+
+  // Tools granted by user during this session (permission responses)
+  private grantedTools = new Set<string>();
+
+  // Delta computation state for partial messages
+  private prevContentSnapshot: ContentBlockSnapshot[] = [];
+  private pendingToolBlocks = new Map<number, PendingToolBlock>();
+
+  // File checkpointing: track user message UUIDs for rewindFiles()
+  private userMessageUuids: string[] = [];
+
+  /** Tools handled internally — never treated as permission denials */
+  private static readonly INTERNAL_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
+  private static readonly SKIP_ALL_PLAN_TOOLS = new Set(["WebFetch", "WebSearch", "Bash"]);
+
+  /** All standard Claude tools (used to auto-allow in bypass mode via canUseTool) */
+  private static readonly ALL_STANDARD_TOOLS = new Set([
+    "Read",
+    "Write",
+    "Edit",
+    "Bash",
+    "Glob",
+    "Grep",
+    "Agent",
+    "TodoWrite",
+    "NotebookEdit",
+    "WebFetch",
+    "WebSearch",
+    "ExitPlanMode",
+  ]);
 
   constructor(private options: ClaudeSessionOptions) {
     super();
     this.jobId = options.jobId;
     this.sessionId = options.sessionId || uuidv4();
+    this.abortController = new AbortController();
+
+    // Pre-grant any explicitly allowed tools
+    if (options.allowedTools?.length) {
+      for (const tool of options.allowedTools) {
+        this.grantedTools.add(tool);
+      }
+    }
   }
 
   start(): void {
     let prompt = this.options.prompt;
     if (this.options.images && this.options.images.length > 0) {
-      const imageList = this.options.images.map(p => `- ${p}`).join('\n');
+      const imageList = this.options.images.map((p) => `- ${p}`).join("\n");
       prompt += `\n\nThe following image files are attached for reference. Please read and examine them:\n${imageList}`;
     }
 
-    const args = [
-      '-p', prompt,
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--include-partial-messages',
-    ];
+    const permissionMode: PermissionMode = this.options.permissionMode ?? "bypassPermissions";
+    const sdkPermissionMode = this.options.phase === "plan" ? "plan" : "default";
 
-    if (this.options.effort && this.options.effort !== 'default') {
-      args.push('--effort', this.options.effort);
+    // Build allowed tools list for auto-approval (SDK won't call canUseTool for these)
+    // Never include AskUserQuestion — we always handle it via canUseTool
+    const allowedTools: string[] = [];
+    if (this.options.phase === "plan") {
+      if (permissionMode === "bypassPermissions") {
+        for (const tool of ClaudeSession.SKIP_ALL_PLAN_TOOLS) {
+          allowedTools.push(tool);
+        }
+      }
     }
 
-    if (this.options.model && this.options.model !== 'default') {
-      args.push('--model', this.options.model);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sdkOptions: Record<string, any> = {
+      cwd: this.options.projectPath,
+      permissionMode: sdkPermissionMode,
+      includePartialMessages: true,
+      abortController: this.abortController,
+      canUseTool: this.handleCanUseTool.bind(this),
+      settingSources: ["user", "project"],
+      // Enable file checkpointing in dev phase for rewindFiles() support
+      enableFileCheckpointing: this.options.phase === "dev",
+    };
+
+    if (allowedTools.length > 0) {
+      sdkOptions.allowedTools = allowedTools;
     }
 
-    const permissionMode: PermissionMode = this.options.permissionMode ?? 'bypassPermissions';
+    if (this.options.effort) {
+      sdkOptions.effort = this.options.effort;
+    }
 
-    if (this.options.phase === 'plan') {
-      // Planning phase: always read-only, never skip permissions
-      args.push('--permission-mode', 'plan');
-    } else if (permissionMode === 'bypassPermissions') {
-      args.push('--dangerously-skip-permissions');
-    } else {
-      // Pre-allow tools we handle internally via streaming events
-      args.push('--allowedTools', [...ClaudeSession.INTERNAL_TOOLS].join(','));
+    if (this.options.model) {
+      sdkOptions.model = this.options.model;
     }
 
     if (this.options.sessionId) {
-      args.push('--resume', this.options.sessionId);
+      sdkOptions.resume = this.options.sessionId;
     }
 
     // Strip CLAUDECODE env var to avoid "nested session" error
     const env = { ...process.env };
     delete env.CLAUDECODE;
+    sdkOptions.env = env;
 
-    const effectiveMode = this.options.phase === 'plan' ? 'plan (read-only)' : permissionMode;
-    console.log('[claude-session] Launch config:', {
+    const effectiveMode = this.options.phase === "plan" ? "plan (read-only)" : permissionMode;
+    console.log("[claude-session] SDK launch config:", {
       phase: this.options.phase,
       resume: Boolean(this.options.sessionId),
       permissionMode: effectiveMode,
-      skipPermissions: this.options.phase !== 'plan' && permissionMode === 'bypassPermissions',
+      sdkPermissionMode,
+      allowedTools: allowedTools.length > 0 ? allowedTools : "(all via canUseTool)",
     });
-    console.log('[claude-session] Spawning via PTY:', 'claude', args.join(' '));
-    console.log('[claude-session] CWD:', this.options.projectPath);
+    console.log("[claude-session] CWD:", this.options.projectPath);
 
-    this.pty = nodePty.spawn('claude', args, {
-      name: 'xterm-256color',
-      cols: 200,
-      rows: 50,
-      cwd: this.options.projectPath,
-      env: env as Record<string, string>,
-    });
-
-    console.log('[claude-session] PTY PID:', this.pty.pid);
-
-    this.pty.onData((data: string) => {
-      // Strip ANSI escape codes and carriage returns from PTY output
-      const cleaned = data
-        .replace(/\x1b\[[0-9;?]*[a-zA-Z~]/g, '') // CSI sequences (incl. private-mode like ?2004h)
-        .replace(/\x1b\](?:[^\x07\x1b]*)\x07/g, '')      // OSC sequences (BEL terminated)
-        .replace(/\x1b\](?:[^\x07\x1b]*)\x1b\\/g, '')    // OSC sequences (ST terminated)
-        .replace(/\x1b[()#][A-Za-z0-9]/g, '')    // Charset selection (e.g. \x1b(B)
-        .replace(/\x1b[^[\]()#]/g, '')            // Other 2-char escape sequences
-        .replace(/\r/g, '');                       // Carriage returns
-
-      if (cleaned) {
-        this.handleStdout(cleaned);
-      }
-    });
-
-    this.pty.onExit(({ exitCode }) => {
-      console.log('[claude-session] PTY exited with code:', exitCode);
-      // Flush any remaining buffer content
-      if (this.buffer.trim()) {
-        try {
-          const msg = JSON.parse(this.buffer.trim());
-          this.emit('raw-message', { timestamp: new Date().toISOString(), json: msg });
-          this.handleMessage(msg);
-        } catch {
-          this.emit('output', {
-            timestamp: new Date().toISOString(),
-            type: 'system',
-            content: this.buffer.trim(),
-          } satisfies OutputEntry);
-        }
-        this.buffer = '';
-      }
-      if (!this.killed) {
-        this.emit('close', exitCode);
-      }
-    });
+    this.queryInstance = query({ prompt, options: sdkOptions });
+    void this.iterateMessages();
+    void this.fetchInitData();
   }
 
-  private handleStdout(data: string): void {
-    this.buffer += data;
-    const lines = this.buffer.split('\n');
-    this.buffer = lines.pop() || '';
+  /**
+   * Fetch the full initialization result from the SDK.
+   * Replaces separate supportedModels() call — gets models, commands, agents,
+   * and account info in one shot.
+   */
+  private async fetchInitData(): Promise<void> {
+    try {
+      if (!this.queryInstance) return;
+      const initResult = await this.queryInstance.initializationResult();
+      if (!initResult) return;
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-
-      // Check for error lines (non-JSON errors from CLI)
-      if (trimmed.startsWith('Error:') || trimmed.startsWith('error:')) {
-        this.hasStderrContent = true;
-        this.emit('error', trimmed);
-        this.emit('output', {
-          timestamp: new Date().toISOString(),
-          type: 'error',
-          content: trimmed,
-        } satisfies OutputEntry);
-        continue;
+      // Models
+      if (initResult.models?.length) {
+        this.emit("supported-models", initResult.models);
       }
 
-      let parsed = false;
+      // Commands (slash commands / skills)
+      if (initResult.commands?.length) {
+        const skills: Skill[] = initResult.commands.map(
+          (cmd: { name: string; description?: string; argumentHint?: string }) => ({
+            name: cmd.name,
+            description: cmd.description || "",
+            source: "global" as const,
+            filePath: "",
+          }),
+        );
+        this.emit("skills", skills);
+      }
+
+      // Account info (supplements the CLI-based startup fetch)
+      if (initResult.account) {
+        this.emit("account-info", initResult.account);
+      }
+    } catch (err) {
+      console.log("[claude-session] Failed to fetch init data, falling back to supportedModels:", err);
+      // Fallback: try the individual method for models
       try {
-        const msg = JSON.parse(trimmed);
-        parsed = true;
-        this.emit('raw-message', {
-          timestamp: new Date().toISOString(),
-          json: msg,
-        });
-        this.handleMessage(msg);
+        if (!this.queryInstance) return;
+        const models = await this.queryInstance.supportedModels();
+        if (models?.length) {
+          this.emit("supported-models", models);
+        }
       } catch {
-        // If it looks like JSON, try stripping any remaining control characters
-        if (!parsed && trimmed.startsWith('{')) {
-          try {
-            // eslint-disable-next-line no-control-regex
-            const sanitized = trimmed.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
-            const msg = JSON.parse(sanitized);
-            parsed = true;
-            this.emit('raw-message', {
-              timestamp: new Date().toISOString(),
-              json: msg,
-            });
-            this.handleMessage(msg);
-          } catch {
-            // Still not parseable
-          }
-        }
-        if (!parsed) {
-          console.log('[claude-session] Non-JSON line:', trimmed.slice(0, 200));
-          this.emit('output', {
-            timestamp: new Date().toISOString(),
-            type: 'text',
-            content: trimmed,
-          } satisfies OutputEntry);
-        }
+        // Silently ignore — models will use the static catalog
       }
     }
   }
 
-  private handleMessage(msg: Record<string, unknown>): void {
-    const type = msg.type as string;
+  // ---------------------------------------------------------------------------
+  // canUseTool callback — handles AskUserQuestion, permissions, and auto-allow
+  // ---------------------------------------------------------------------------
 
-    switch (type) {
-      case 'stream_event': {
-        const event = msg.event as Record<string, unknown>;
-        if (!event) break;
-        this.handleStreamEvent(event);
-        break;
-      }
+  private async handleCanUseTool(
+    toolName: string,
+    input: Record<string, unknown>,
+    options: CanUseToolOptions,
+  ): Promise<PermissionResult> {
+    // AskUserQuestion — always prompt user interactively
+    if (toolName === "AskUserQuestion") {
+      return this.handleAskUserQuestion(input, options);
+    }
 
-      case 'assistant': {
-        // Track tool_use IDs → names for permission denial detection
-        const assistantMsg = msg.message as Record<string, unknown> | undefined;
-        const assistantContent = assistantMsg?.content as Array<Record<string, unknown>> | undefined;
-        if (Array.isArray(assistantContent)) {
-          for (const block of assistantContent) {
-            if (block.type === 'tool_use' && block.id && block.name) {
-              this.toolUseIdToName.set(block.id as string, block.name as string);
+    // ExitPlanMode — in plan phase, stop the session to wait for user approval
+    if (toolName === "ExitPlanMode") {
+      if (this.options.phase === "plan") {
+        // Plan phase complete. Deny ExitPlanMode to prevent the SDK from
+        // transitioning to development mode. Then kill the session and emit
+        // close(0) so the ipc-handlers flow marks the plan as ready.
+        process.nextTick(() => {
+          this.emit("plan-complete");
+          this.killed = true;
+          this.abortController.abort();
+          if (this.queryInstance) {
+            try {
+              this.queryInstance.close();
+            } catch {
+              /* already closed */
             }
+            this.queryInstance = null;
           }
-        }
-        break;
+          this.emit("close", 0);
+        });
+        return { behavior: "deny", message: "Plan complete." };
       }
+      return { behavior: "allow", updatedInput: input };
+    }
 
-      case 'result': {
-        // Fallback: detect permission denials from the result's permission_denials array
-        const permDenials = msg.permission_denials as Array<{ tool_name?: string }> | undefined;
-        if (Array.isArray(permDenials) && permDenials.length > 0 && !this.permissionDeniedEmitted) {
-          const toolNames = permDenials.map(d => d.tool_name).filter(Boolean) as string[];
-          // Filter out tools we handle internally via streaming events
-          const unique = [...new Set(toolNames)].filter(t => !ClaudeSession.INTERNAL_TOOLS.has(t));
-          if (unique.length > 0) {
-            this.permissionDeniedEmitted = true;
-            const message = `Claude needs permission to use: ${unique.join(', ')}`;
-            console.log('[claude-session] Permission denied (from result):', message);
-            this.emit('permission-denied', { message, deniedTools: unique });
-          }
-        }
+    // Tools granted by user during this session
+    if (this.grantedTools.has(toolName)) {
+      return { behavior: "allow", updatedInput: input };
+    }
 
-        const subtype = msg.subtype as string;
-        const result = (msg.result as string) || '';
-        if (subtype === 'success') {
-          if (result && !this.planEmitted) {
-            // Check if result looks like actual plan text (not JSON from ExitPlanMode)
-            const trimmedResult = result.trim();
-            if (trimmedResult.startsWith('{') || trimmedResult.startsWith('[')) {
-              // This is JSON (likely ExitPlanMode's allowedPrompts), not the plan
-              // Don't emit as plan
-            } else {
-              this.planEmitted = true;
-              this.emit('output', {
-                timestamp: new Date().toISOString(),
-                type: 'plan',
-                content: result,
-              } satisfies OutputEntry);
-              this.emit('plan-text', result);
-            }
-          }
-          // If no plan was explicitly captured, use accumulated assistant text as the plan
-          if (!this.planEmitted && this.assistantTextBuffer.trim()) {
-            this.planEmitted = true;
-            this.emit('output', {
-              timestamp: new Date().toISOString(),
-              type: 'plan',
-              content: this.assistantTextBuffer.trim(),
-            } satisfies OutputEntry);
-            this.emit('plan-text', this.assistantTextBuffer.trim());
-          }
-          // For dev phase, emit the result (or accumulated text) as a summary
-          if (this.options.phase === 'dev') {
-            const summary = result?.trim() || this.assistantTextBuffer.trim();
-            if (summary) {
-              this.emit('summary-text', summary);
-            }
-          }
-          this.emit('plan-complete');
-        } else if (subtype?.startsWith('error')) {
-          if (result) {
-            this.emit('output', {
-              timestamp: new Date().toISOString(),
-              type: 'error',
-              content: result,
-            } satisfies OutputEntry);
-          }
-          this.emit('error', result || `Session ended with: ${subtype}`);
-        }
-        break;
-      }
+    // Bypass mode (dev phase): auto-allow all standard tools
+    const permissionMode = this.options.permissionMode ?? "bypassPermissions";
+    if (this.options.phase !== "plan" && permissionMode === "bypassPermissions") {
+      return { behavior: "allow", updatedInput: input };
+    }
 
-      case 'system': {
-        // Capture session ID from init message
-        if (msg.subtype === 'init' && msg.session_id) {
-          this.sessionId = msg.session_id as string;
-          this.emit('session-id', this.sessionId);
-        }
-        const content = this.formatSystemMessage(msg);
-        if (content) {
-          this.emit('output', {
-            timestamp: new Date().toISOString(),
-            type: 'system',
-            content,
-          } satisfies OutputEntry);
-        }
-        break;
-      }
-
-      case 'user': {
-        // Read the full plan file from disk after an Edit tool modified it
-        if (this.pendingPlanFileRead) {
-          const planPath = this.pendingPlanFileRead;
-          this.pendingPlanFileRead = '';
-          try {
-            const planContent = fs.readFileSync(planPath, 'utf-8');
-            if (planContent.trim()) {
-              this.planEmitted = true;
-              this.emit('output', {
-                timestamp: new Date().toISOString(),
-                type: 'plan',
-                content: planContent,
-              } satisfies OutputEntry);
-              this.emit('plan-text', planContent);
-            }
-          } catch (err) {
-            console.log('[claude-session] Failed to read edited plan file:', planPath, err);
-          }
-        }
-
-        // Detect permission denial from top-level tool_use_result field
-        const rawToolUseResult = msg.tool_use_result;
-        const toolUseResult = typeof rawToolUseResult === 'string' ? rawToolUseResult : undefined;
-        if (toolUseResult && !this.permissionDeniedEmitted && toolUseResult.includes('Claude requested permissions to')) {
-          // Resolve the denied tool name from the tool_use_id → name map
-          const userMsg = msg.message as Record<string, unknown> | undefined;
-          const blocks = userMsg?.content as Array<Record<string, unknown>> | undefined;
-          const deniedTools = new Set<string>();
-          if (Array.isArray(blocks)) {
-            for (const b of blocks) {
-              if (b.type === 'tool_result' && b.tool_use_id) {
-                const name = this.toolUseIdToName.get(b.tool_use_id as string);
-                // Filter out tools we handle internally via streaming events
-                if (name && !ClaudeSession.INTERNAL_TOOLS.has(name)) deniedTools.add(name);
-              }
-            }
-          }
-          if (deniedTools.size > 0) {
-            this.permissionDeniedEmitted = true;
-            console.log('[claude-session] Permission denied:', toolUseResult, 'tools:', [...deniedTools]);
-            this.emit('permission-denied', {
-              message: toolUseResult.replace(/^Error:\s*/, ''),
-              deniedTools: [...deniedTools],
-            });
-          }
-        }
-
-        // Tool results come back as user messages containing tool_result content blocks
-        // Content may be at msg.content or msg.message.content depending on CLI version
-        const userMessage = msg.message as Record<string, unknown> | undefined;
-        const content = (msg.content ?? userMessage?.content) as Array<Record<string, unknown>> | undefined;
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block.type === 'tool_result') {
-              const resultContent = block.content;
-              if (!resultContent) continue;
-              let text: string;
-              if (typeof resultContent === 'string') {
-                text = resultContent;
-              } else if (Array.isArray(resultContent)) {
-                // Content blocks array — extract text from text blocks
-                text = (resultContent as Array<Record<string, unknown>>)
-                  .filter((b) => b.type === 'text' && b.text)
-                  .map((b) => b.text as string)
-                  .join('\n');
-                if (!text) text = JSON.stringify(resultContent);
-              } else {
-                text = JSON.stringify(resultContent);
-              }
-              if (text) {
-                this.emit('output', {
-                  timestamp: new Date().toISOString(),
-                  type: 'tool-result',
-                  content: text,
-                } satisfies OutputEntry);
-              }
-            }
-          }
-        }
-        break;
-      }
-
-      case 'input_request': {
-        // CLI may emit input_request when waiting for user input (e.g. permission prompts)
-        const questionText = (msg.question as string) || (msg.message as string) || 'Claude is waiting for input';
-        let options: QuestionOption[] | undefined;
-        if (Array.isArray(msg.options)) {
-          options = (msg.options as Array<unknown>).map((opt) => {
-            if (typeof opt === 'string') return { label: opt };
-            const o = opt as Record<string, unknown>;
-            return { label: (o.label as string) || String(opt), description: o.description as string | undefined };
-          });
-        }
-        this.emit('needs-input', {
-          questionId: (msg.request_id as string) || uuidv4(),
-          text: questionText,
-          options,
-          timestamp: new Date().toISOString(),
-        } satisfies PendingQuestion);
-        // Kill the session so Claude doesn't continue executing while waiting for user response
-        // (same pattern as AskUserQuestion — session will be resumed via jobs:respond)
-        this.emit('user-question');
-        break;
-      }
-
-      default: {
-        // Unknown top-level type — extract readable content instead of raw JSON dump
-        const readable = this.extractReadableContent(msg);
-        if (readable) {
-          this.emit('output', {
-            timestamp: new Date().toISOString(),
-            type: 'system',
-            content: readable,
-          } satisfies OutputEntry);
-        }
+    // Plan phase with bypass: auto-allow SKIP_ALL_PLAN_TOOLS
+    if (this.options.phase === "plan" && permissionMode === "bypassPermissions") {
+      if (ClaudeSession.SKIP_ALL_PLAN_TOOLS.has(toolName)) {
+        return { behavior: "allow", updatedInput: input };
       }
     }
+
+    // Default mode: prompt user for permission
+    return this.promptUserForPermission(toolName, input, options);
   }
 
-  private handleStreamEvent(event: Record<string, unknown>): void {
-    const eventType = event.type as string;
+  private handleAskUserQuestion(input: Record<string, unknown>, options: CanUseToolOptions): Promise<PermissionResult> {
+    // Parse and emit the question to the UI
+    this.emitQuestion(input);
 
-    switch (eventType) {
-      case 'message_start': {
-        const message = event.message as { model?: string; usage?: Record<string, number> } | undefined;
-        if (message?.model) {
-          console.log('[claude-session] Model:', message.model);
-        }
-        // Flush previous message output tokens and extract input tokens
-        this._outputTokens += this._currentMsgOutputTokens;
-        this._currentMsgOutputTokens = 0;
-        const usage = message?.usage as { input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined;
-        if (usage) {
-          const inputTotal = (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
-          if (inputTotal > 0) this._inputTokens += inputTotal;
-        }
-        break;
+    // Block until user responds (resolved by sendResponse) or abort signal fires
+    return new Promise((resolve) => {
+      this.pendingInputResolve = resolve;
+      this.pendingInputContext = { type: "question", toolInput: input };
+
+      // If the operation is aborted while waiting, resolve with deny
+      if (options.signal.aborted) {
+        this.pendingInputResolve = null;
+        this.pendingInputContext = null;
+        resolve({ behavior: "deny", message: "Operation aborted" });
+        return;
       }
-
-      case 'message_delta': {
-        const delta = event.delta as { stop_reason?: string } | undefined;
-        const usage = event.usage as { output_tokens?: number } | undefined;
-        if (delta?.stop_reason === 'max_tokens') {
-          this.emit('output', {
-            timestamp: new Date().toISOString(),
-            type: 'system',
-            content: 'Warning: response was truncated (max_tokens reached)',
-          } satisfies OutputEntry);
+      const onAbort = (): void => {
+        if (this.pendingInputResolve === resolve) {
+          this.pendingInputResolve = null;
+          this.pendingInputContext = null;
+          resolve({ behavior: "deny", message: "Operation aborted" });
         }
-        if (usage?.output_tokens) {
-          console.log('[claude-session] Output tokens:', usage.output_tokens);
-          this._currentMsgOutputTokens = usage.output_tokens;
-        }
-        break;
-      }
-
-      case 'content_block_start': {
-        const block = event.content_block as { type: string; name?: string };
-        if (block?.type === 'tool_use' && block.name) {
-          this.currentToolName = block.name;
-          this.currentToolBuffer = '';
-          this.isAskingQuestion = block.name === 'AskUserQuestion';
-
-          // Suppress ExitPlanMode and AskUserQuestion from tool output
-          if (!block.name.includes('ExitPlanMode') && block.name !== 'AskUserQuestion') {
-            this.emit('output', {
-              timestamp: new Date().toISOString(),
-              type: 'tool-use',
-              content: '',
-              toolName: block.name,
-            } satisfies OutputEntry);
-          }
-        }
-        break;
-      }
-
-      case 'content_block_delta': {
-        const delta = event.delta as { type: string; text?: string; thinking?: string; partial_json?: string };
-        if (!delta) break;
-
-        if (delta.type === 'text_delta' && delta.text) {
-          this.assistantTextBuffer += delta.text;
-          this.emit('output', {
-            timestamp: new Date().toISOString(),
-            type: 'text',
-            content: delta.text,
-          } satisfies OutputEntry);
-        } else if (delta.type === 'thinking_delta' && delta.thinking) {
-          this.emit('output', {
-            timestamp: new Date().toISOString(),
-            type: 'thinking',
-            content: delta.thinking,
-          } satisfies OutputEntry);
-        } else if (delta.type === 'input_json_delta' && delta.partial_json) {
-          // Always buffer the tool input for plan detection and question parsing on block_stop
-          this.currentToolBuffer += delta.partial_json;
-
-          if (this.currentToolName.includes('ExitPlanMode') || this.isAskingQuestion) {
-            // Suppress ExitPlanMode and AskUserQuestion deltas from tool output
-          } else {
-            // Emit delta WITHOUT toolName — the content_block_start already created the section
-            this.emit('output', {
-              timestamp: new Date().toISOString(),
-              type: 'tool-use',
-              content: delta.partial_json,
-            } satisfies OutputEntry);
-          }
-        }
-        break;
-      }
-
-      case 'content_block_stop': {
-        if (this.currentToolName && this.currentToolBuffer) {
-          try {
-            const input = JSON.parse(this.currentToolBuffer) as Record<string, unknown>;
-            this.emit('tool-call', {
-              name: this.currentToolName,
-              input,
-            });
-          } catch {
-            // Ignore incomplete tool JSON
-          }
-        }
-
-        // Check if Claude is asking a question via AskUserQuestion tool
-        if (this.isAskingQuestion && this.currentToolBuffer) {
-          try {
-            const input = JSON.parse(this.currentToolBuffer);
-            this.emitQuestion(input);
-          } catch {
-            // Fallback: use raw buffer as question text
-            this.emit('needs-input', {
-              questionId: uuidv4(),
-              text: this.currentToolBuffer,
-              timestamp: new Date().toISOString(),
-            } satisfies PendingQuestion);
-          }
-          // Signal that the session should be paused — the CLI won't wait for user input
-          this.emit('user-question');
-          this.isAskingQuestion = false;
-        }
-
-        // Check if this tool wrote the plan file
-        if (this.currentToolName === 'Write' && this.currentToolBuffer) {
-          try {
-            const input = JSON.parse(this.currentToolBuffer);
-            if (input.file_path && input.file_path.includes('.claude/plans/') && input.content) {
-              this.planEmitted = true;
-              this.emit('output', {
-                timestamp: new Date().toISOString(),
-                type: 'plan',
-                content: input.content,
-              } satisfies OutputEntry);
-              this.emit('plan-text', input.content);
-            }
-          } catch {
-            // JSON not complete, ignore
-          }
-        }
-
-        // Check if this tool edited the plan file — schedule a file read on next tool result
-        if (this.currentToolName === 'Edit' && this.currentToolBuffer) {
-          try {
-            const input = JSON.parse(this.currentToolBuffer);
-            if (input.file_path && input.file_path.includes('.claude/plans/')) {
-              const filePath = path.isAbsolute(input.file_path)
-                ? input.file_path
-                : path.join(this.options.projectPath, input.file_path);
-              this.pendingPlanFileRead = filePath;
-            }
-          } catch {
-            // JSON not complete, ignore
-          }
-        }
-
-        this.currentToolBuffer = '';
-        this.currentToolName = '';
-        break;
-      }
-
-      default:
-        break;
-    }
+      };
+      options.signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
+
+  private promptUserForPermission(
+    toolName: string,
+    input: Record<string, unknown>,
+    options: CanUseToolOptions,
+  ): Promise<PermissionResult> {
+    const reasonText = options.decisionReason ? `\n\nReason: ${options.decisionReason}` : "";
+    const question: PendingQuestion = {
+      questionId: `perm-${Date.now()}`,
+      text: `Claude needs permission to use: ${toolName}${reasonText}`,
+      header: "Permission Required",
+      options: [
+        { label: "Allow", description: `Grant ${toolName} for this session` },
+        { label: "Deny", description: "Deny this operation" },
+      ],
+      isPermissionRequest: true,
+      deniedTools: [toolName],
+      timestamp: new Date().toISOString(),
+    };
+
+    this.emit("needs-input", question);
+
+    // Block until user responds (resolved by sendResponse) or abort signal fires
+    return new Promise((resolve) => {
+      this.pendingInputResolve = resolve;
+      this.pendingInputContext = { type: "permission", toolInput: input, toolName };
+
+      if (options.signal.aborted) {
+        this.pendingInputResolve = null;
+        this.pendingInputContext = null;
+        resolve({ behavior: "deny", message: "Operation aborted" });
+        return;
+      }
+      const onAbort = (): void => {
+        if (this.pendingInputResolve === resolve) {
+          this.pendingInputResolve = null;
+          this.pendingInputContext = null;
+          resolve({ behavior: "deny", message: "Operation aborted" });
+        }
+      };
+      options.signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API (used by ipc-handlers)
+  // ---------------------------------------------------------------------------
 
   /**
-   * Format a system message into a human-readable string.
-   * Returns empty string to suppress the message entirely.
+   * Respond to a pending AskUserQuestion or permission prompt.
+   * Resolves the canUseTool promise so the SDK continues.
    */
-  private formatSystemMessage(msg: Record<string, unknown>): string {
-    const subtype = msg.subtype as string | undefined;
-
-    switch (subtype) {
-      case 'init':
-        return `Session started (${msg.session_id})`;
-
-      case 'task_started': {
-        const description = msg.description as string | undefined;
-        const taskType = msg.task_type as string | undefined;
-        const label = taskType === 'local_agent' ? 'Subagent' : (taskType || 'Task');
-        return description ? `${label} started: ${description}` : `${label} started`;
-      }
-
-      case 'task_progress': {
-        const description = msg.description as string | undefined;
-        const toolName = msg.last_tool_name as string | undefined;
-        if (description) {
-          return toolName ? `[${toolName}] ${description}` : description;
-        }
-        return '';
-      }
-
-      case 'task_notification': {
-        const status = msg.status as string || 'unknown';
-        const summary = msg.summary as string || '';
-        const usage = msg.usage as { total_tokens?: number; tool_uses?: number; duration_ms?: number } | undefined;
-        const parts = [summary ? `Task ${status}: ${summary}` : `Task ${status}`];
-        if (usage) {
-          const details: string[] = [];
-          if (usage.tool_uses != null) details.push(`${usage.tool_uses} tool uses`);
-          if (usage.duration_ms != null) details.push(`${(usage.duration_ms / 1000).toFixed(1)}s`);
-          if (usage.total_tokens != null) details.push(`${usage.total_tokens.toLocaleString()} tokens`);
-          if (details.length > 0) parts.push(`(${details.join(', ')})`);
-        }
-        return parts.join(' ');
-      }
-
-      case 'task_completed': {
-        const description = msg.description as string | undefined;
-        return description ? `Task completed: ${description}` : 'Task completed';
-      }
-
-      case 'api_request': {
-        // Internal API request telemetry — suppress from logs
-        return '';
-      }
-
-      default: {
-        // Fallback: use explicit message field if present, otherwise build from known fields
-        if (msg.message && typeof msg.message === 'string') {
-          return msg.message;
-        }
-        // Extract only meaningful fields for display, skip internal IDs / raw data
-        return this.extractReadableContent(msg);
-      }
-    }
-  }
-
-  /**
-   * Extract a human-readable summary from an arbitrary message object.
-   * Prioritizes display-friendly fields and suppresses internal/noisy ones.
-   */
-  private extractReadableContent(msg: Record<string, unknown>): string {
-    // Fields that carry user-meaningful information
-    const readableKeys = ['description', 'summary', 'message', 'status', 'error', 'reason', 'text', 'name', 'title'];
-    // Fields that are internal/noisy and should never be shown
-    const suppressKeys = new Set([
-      'type', 'subtype', 'task_id', 'tool_use_id', 'uuid', 'session_id',
-      'prompt', 'content', 'usage', 'task_type',
-    ]);
-
-    // Try to build from readable fields first
-    const parts: string[] = [];
-    for (const key of readableKeys) {
-      const val = msg[key];
-      if (val && typeof val === 'string') {
-        parts.push(val);
-      }
-    }
-    if (parts.length > 0) return parts.join(' — ');
-
-    // Last resort: show remaining non-suppressed scalar fields
-    const remaining: string[] = [];
-    for (const [key, val] of Object.entries(msg)) {
-      if (suppressKeys.has(key)) continue;
-      if (val == null || typeof val === 'object') continue;
-      remaining.push(`${key}: ${String(val)}`);
-    }
-    return remaining.length > 0 ? remaining.join(', ') : '';
-  }
-
-  private emitQuestion(input: Record<string, unknown>): void {
-    // Handle structured questions format: {questions: [{question, header, options: [{label, description}], multiSelect}]}
-    if (Array.isArray(input.questions) && input.questions.length > 0) {
-      const q = input.questions[0] as Record<string, unknown>;
-      const questionText = (q.question as string) || (q.text as string) || '';
-      const header = q.header as string | undefined;
-      const multiSelect = q.multiSelect as boolean | undefined;
-
-      let options: QuestionOption[] | undefined;
-      if (Array.isArray(q.options)) {
-        options = (q.options as Array<Record<string, unknown>>).map((opt) => {
-          if (typeof opt === 'string') return { label: opt };
-          return {
-            label: (opt.label as string) || String(opt),
-            description: opt.description as string | undefined,
-          };
-        });
-      }
-
-      this.emit('needs-input', {
-        questionId: uuidv4(),
-        text: questionText,
-        header,
-        options,
-        multiSelect,
-        timestamp: new Date().toISOString(),
-      } satisfies PendingQuestion);
-    } else {
-      // Flat format: {question: "...", options: [...]}
-      const questionText = (input.question as string) || (input.text as string) || JSON.stringify(input);
-      let options: QuestionOption[] | undefined;
-      if (Array.isArray(input.options)) {
-        options = (input.options as Array<unknown>).map((opt) => {
-          if (typeof opt === 'string') return { label: opt };
-          const o = opt as Record<string, unknown>;
-          return {
-            label: (o.label as string) || String(opt),
-            description: o.description as string | undefined,
-          };
-        });
-      }
-
-      this.emit('needs-input', {
-        questionId: uuidv4(),
-        text: questionText,
-        options,
-        timestamp: new Date().toISOString(),
-      } satisfies PendingQuestion);
-    }
-  }
-
   sendResponse(text: string): void {
-    if (this.pty) {
-      this.pty.write(text + '\n');
+    if (!this.pendingInputResolve || !this.pendingInputContext) {
+      console.log("[claude-session] sendResponse called but no pending input");
+      return;
+    }
+
+    const resolve = this.pendingInputResolve;
+    const context = this.pendingInputContext;
+    this.pendingInputResolve = null;
+    this.pendingInputContext = null;
+
+    if (context.type === "question") {
+      // Build answers for AskUserQuestion
+      const questions = (context.toolInput.questions as Array<Record<string, unknown>>) || [];
+      const answers: Record<string, string> = {};
+      if (questions.length > 0) {
+        // Map first question to the user's response text
+        const questionText = (questions[0].question as string) || "";
+        answers[questionText] = text;
+      }
+      resolve({
+        behavior: "allow" as const,
+        updatedInput: { questions, answers },
+      });
+    } else if (context.type === "permission") {
+      const isAllowed = text.toLowerCase().includes("allow");
+      if (isAllowed && context.toolName) {
+        // Grant this tool for the rest of the session
+        this.grantedTools.add(context.toolName);
+        resolve({ behavior: "allow" as const, updatedInput: context.toolInput });
+      } else {
+        resolve({ behavior: "deny" as const, message: "Permission denied by user" });
+      }
     }
   }
 
+  /**
+   * Interrupt the current session. The session is killed — caller should
+   * resume with a new session if needed (e.g. for steering).
+   */
   interrupt(): void {
-    if (this.pty) {
-      this.pty.write('\x1b'); // Escape to interrupt current generation
-    }
+    this.kill();
   }
 
   kill(): void {
     this.killed = true;
-    if (this.pty) {
-      this.pty.kill();
+
+    // Resolve any pending canUseTool promise to unblock the SDK
+    if (this.pendingInputResolve) {
+      this.pendingInputResolve({ behavior: "deny", message: "Session killed" });
+      this.pendingInputResolve = null;
+      this.pendingInputContext = null;
+    }
+
+    // Use SDK's interrupt() for cleaner shutdown, fall back to manual abort
+    if (this.queryInstance) {
+      this.queryInstance.interrupt().catch(() => {
+        /* already closed */
+      });
+      this.queryInstance = null;
+    } else {
+      this.abortController.abort();
+    }
+  }
+
+  /** Get tracked user message UUIDs (for rewindFiles) */
+  get userMessages(): string[] {
+    return [...this.userMessageUuids];
+  }
+
+  /**
+   * Rewind files to their state at the given user message UUID.
+   * Requires enableFileCheckpointing and an active query instance.
+   */
+  async rewindFiles(
+    userMessageId: string,
+    options?: { dryRun?: boolean },
+  ): Promise<{ canRewind: boolean; error?: string; filesChanged?: string[]; insertions?: number; deletions?: number }> {
+    if (!this.queryInstance) {
+      return { canRewind: false, error: "No active session" };
+    }
+    if (this.options.phase !== "dev") {
+      return { canRewind: false, error: "File checkpointing is only available in dev phase" };
+    }
+    try {
+      return await this.queryInstance.rewindFiles(userMessageId, options);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { canRewind: false, error: msg };
     }
   }
 
@@ -772,6 +463,689 @@ export class ClaudeSession extends EventEmitter {
   }
 
   get isRunning(): boolean {
-    return this.pty !== null && !this.killed;
+    return this.queryInstance !== null && !this.killed;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Message iteration loop (replaces PTY onData + handleStdout + handleMessage)
+  // ---------------------------------------------------------------------------
+
+  private async iterateMessages(): Promise<void> {
+    try {
+      for await (const msg of this.queryInstance!) {
+        if (this.killed) break;
+
+        this.emit("raw-message", {
+          timestamp: new Date().toISOString(),
+          json: msg as Record<string, unknown>,
+        });
+        this.handleSDKMessage(msg);
+      }
+
+      if (!this.killed) {
+        this.emit("close", 0);
+      }
+    } catch (err: unknown) {
+      if (this.killed) return;
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      // Ignore abort errors (expected when session is killed/interrupted)
+      if (errorMsg.includes("abort") || errorMsg.includes("AbortError")) {
+        this.emit("close", 0);
+        return;
+      }
+      this.emit("error", errorMsg);
+      this.emit("output", {
+        timestamp: new Date().toISOString(),
+        type: "error",
+        content: errorMsg,
+      } satisfies OutputEntry);
+      this.emit("close", 1);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // SDK message handling
+  // ---------------------------------------------------------------------------
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleSDKMessage(msg: any): void {
+    const type = msg.type as string;
+
+    switch (type) {
+      case "system":
+        this.handleSystemMessage(msg);
+        break;
+      case "assistant":
+        this.handleAssistantMessage(msg);
+        break;
+      case "user":
+        this.handleUserMessage(msg);
+        break;
+      case "result":
+        this.handleResultMessage(msg);
+        break;
+      case "rate_limit_event":
+        this.handleRateLimitEvent(msg);
+        break;
+      case "tool_progress":
+        this.handleToolProgress(msg);
+        break;
+      case "tool_use_summary":
+        this.handleToolUseSummary(msg);
+        break;
+      case "prompt_suggestion":
+        this.handlePromptSuggestion(msg);
+        break;
+      case "auth_status":
+        this.handleAuthStatus(msg);
+        break;
+      default:
+        // console.log(`[claude-session] Unhandled message type: ${type}`, JSON.stringify(msg).slice(0, 200));
+        break;
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleSystemMessage(msg: any): void {
+    if (msg.subtype === "init" && msg.session_id) {
+      this.sessionId = msg.session_id as string;
+      this.emit("session-id", this.sessionId);
+
+      // Extract skills from the SDK init message
+      const sdkSkills = this.parseInitSkills(msg);
+      if (sdkSkills.length > 0) {
+        this.emit("skills", sdkSkills);
+      }
+    }
+
+    const content = this.formatSystemMessage(msg);
+    if (content) {
+      this.emit("output", {
+        timestamp: new Date().toISOString(),
+        type: "system",
+        content,
+      } satisfies OutputEntry);
+    }
+  }
+
+  /**
+   * Parse skills from the SDK system init message.
+   * The init message may include a `skills` array with name/description/source info.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private parseInitSkills(msg: any): Skill[] {
+    const raw = msg.skills;
+    if (!Array.isArray(raw)) return [];
+
+    const skills: Skill[] = [];
+    for (const entry of raw) {
+      if (!entry || typeof entry !== "object") continue;
+      const name = (entry.name as string) || "";
+      if (!name) continue;
+
+      // Determine source: SDK may use 'user'/'global' for global and 'project' for project-level
+      let source: Skill["source"] = "global";
+      const rawSource = (entry.source as string) || "";
+      if (rawSource === "project" || rawSource === "local") {
+        source = "project";
+      }
+
+      skills.push({
+        name,
+        description: (entry.description as string) || "",
+        source,
+        filePath: (entry.file_path as string) || (entry.filePath as string) || "",
+      });
+    }
+    return skills;
+  }
+
+  /**
+   * Handle partial and complete assistant messages.
+   * With includePartialMessages, each yield is a snapshot of accumulated content.
+   * We compute deltas for text/thinking and handle tool_use blocks.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleAssistantMessage(msg: any): void {
+    const message = msg.message;
+    if (!message) return;
+
+    const content = message.content;
+    if (!Array.isArray(content)) return;
+
+    // Track token usage
+    const usage = message.usage as
+      | {
+          input_tokens?: number;
+          output_tokens?: number;
+          cache_read_input_tokens?: number;
+          cache_creation_input_tokens?: number;
+        }
+      | undefined;
+    if (usage) {
+      const inputTotal =
+        (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
+      if (inputTotal > this._inputTokens) {
+        this._inputTokens = inputTotal;
+      }
+      if (usage.output_tokens && usage.output_tokens > this._currentMsgOutputTokens) {
+        this._currentMsgOutputTokens = usage.output_tokens;
+      }
+    }
+
+    // When new blocks appear, finalize previous tool blocks
+    if (content.length > this.prevContentSnapshot.length) {
+      for (let j = 0; j < this.prevContentSnapshot.length; j++) {
+        if (this.prevContentSnapshot[j]?.type === "tool_use") {
+          this.finalizeToolBlock(j);
+        }
+      }
+    }
+
+    const now = new Date().toISOString();
+
+    for (let i = 0; i < content.length; i++) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const block = content[i] as any;
+      const prev = this.prevContentSnapshot[i];
+
+      if (block.type === "text") {
+        const prevLen = prev?.type === "text" ? prev.textLength : 0;
+        const text = (block.text as string) || "";
+        if (text.length > prevLen) {
+          const delta = text.substring(prevLen);
+          this.assistantTextBuffer += delta;
+          this.emit("output", {
+            timestamp: now,
+            type: "text",
+            content: delta,
+          } satisfies OutputEntry);
+        }
+        this.prevContentSnapshot[i] = { type: "text", textLength: text.length };
+      } else if (block.type === "thinking") {
+        const prevLen = prev?.type === "thinking" ? prev.textLength : 0;
+        const thinking = (block.thinking as string) || "";
+        if (thinking.length > prevLen) {
+          const delta = thinking.substring(prevLen);
+          this.emit("output", {
+            timestamp: now,
+            type: "thinking",
+            content: delta,
+          } satisfies OutputEntry);
+        }
+        this.prevContentSnapshot[i] = { type: "thinking", textLength: thinking.length };
+      } else if (block.type === "tool_use") {
+        if (!prev || prev.type !== "tool_use") {
+          // New tool block
+          const name = block.name as string;
+          if (!ClaudeSession.INTERNAL_TOOLS.has(name)) {
+            this.emit("output", {
+              timestamp: now,
+              type: "tool-use",
+              content: "",
+              toolName: name,
+            } satisfies OutputEntry);
+          }
+          this.pendingToolBlocks.set(i, {
+            name,
+            id: block.id as string | undefined,
+            input: (block.input as Record<string, unknown>) || {},
+            emittedStart: true,
+          });
+        } else {
+          // Update pending tool input with latest partial
+          const pending = this.pendingToolBlocks.get(i);
+          if (pending) {
+            pending.input = (block.input as Record<string, unknown>) || {};
+          }
+        }
+        this.prevContentSnapshot[i] = { type: "tool_use", textLength: 0, name: block.name as string };
+      }
+    }
+  }
+
+  /**
+   * Finalize a tool block — emit full input and trigger plan detection.
+   * Called when a new block appears after it, or when a non-assistant message arrives.
+   */
+  private finalizeToolBlock(index: number): void {
+    const pending = this.pendingToolBlocks.get(index);
+    if (!pending) return;
+    this.pendingToolBlocks.delete(index);
+
+    const { name, input } = pending;
+
+    // Emit tool input (if not internal tool)
+    if (!ClaudeSession.INTERNAL_TOOLS.has(name)) {
+      const inputStr = JSON.stringify(input);
+      if (inputStr !== "{}") {
+        this.emit("output", {
+          timestamp: new Date().toISOString(),
+          type: "tool-use",
+          content: inputStr,
+        } satisfies OutputEntry);
+      }
+    }
+
+    // Emit tool-call event for step history tracking
+    this.emit("tool-call", { name, input });
+
+    // Plan detection: Write to .claude/plans/
+    if (name === "Write" && (input.file_path as string)?.includes(".claude/plans/") && input.content) {
+      this.planEmitted = true;
+      this.emit("output", {
+        timestamp: new Date().toISOString(),
+        type: "plan",
+        content: input.content as string,
+      } satisfies OutputEntry);
+      this.emit("plan-text", input.content as string);
+    }
+
+    // Plan detection: Edit to .claude/plans/
+    if (name === "Edit" && (input.file_path as string)?.includes(".claude/plans/")) {
+      const filePath = path.isAbsolute(input.file_path as string)
+        ? (input.file_path as string)
+        : path.join(this.options.projectPath, input.file_path as string);
+      this.readPlanFile(filePath);
+    }
+  }
+
+  private finalizeAllToolBlocks(): void {
+    for (const index of this.pendingToolBlocks.keys()) {
+      this.finalizeToolBlock(index);
+    }
+    // Reset content snapshot for next assistant turn
+    this.prevContentSnapshot = [];
+    // Flush output tokens from completed message turn
+    this._outputTokens += this._currentMsgOutputTokens;
+    this._currentMsgOutputTokens = 0;
+  }
+
+  private readPlanFile(filePath: string): void {
+    try {
+      const planContent = fs.readFileSync(filePath, "utf-8");
+      if (planContent.trim()) {
+        this.planEmitted = true;
+        this.emit("output", {
+          timestamp: new Date().toISOString(),
+          type: "plan",
+          content: planContent,
+        } satisfies OutputEntry);
+        this.emit("plan-text", planContent);
+      }
+    } catch (err) {
+      console.log("[claude-session] Failed to read plan file:", filePath, err);
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleUserMessage(msg: any): void {
+    // Finalize all pending tool blocks (tool results mean tools completed)
+    this.finalizeAllToolBlocks();
+
+    // Track user message UUIDs for rewindFiles()
+    const uuid = msg.uuid as string | undefined;
+    if (uuid && !msg.parent_tool_use_id) {
+      this.userMessageUuids.push(uuid);
+      this.emit("user-message-uuid", uuid);
+    }
+
+    // Extract tool results for display
+    const message = msg.message;
+    const content = message?.content ?? msg.content;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if ((block as Record<string, unknown>).type === "tool_result") {
+          const resultContent = (block as Record<string, unknown>).content;
+          if (!resultContent) continue;
+
+          let text: string;
+          if (typeof resultContent === "string") {
+            text = resultContent;
+          } else if (Array.isArray(resultContent)) {
+            text = (resultContent as Array<Record<string, unknown>>)
+              .filter((b) => b.type === "text" && b.text)
+              .map((b) => b.text as string)
+              .join("\n");
+            if (!text) text = JSON.stringify(resultContent);
+          } else {
+            text = JSON.stringify(resultContent);
+          }
+
+          if (text) {
+            this.emit("output", {
+              timestamp: new Date().toISOString(),
+              type: "tool-result",
+              content: text,
+            } satisfies OutputEntry);
+          }
+        }
+      }
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleResultMessage(msg: any): void {
+    this.finalizeAllToolBlocks();
+
+    const subtype = msg.subtype as string;
+    const result = (msg.result as string) || "";
+
+    // Capture session ID from result
+    if (msg.session_id) {
+      this.sessionId = msg.session_id as string;
+    }
+
+    // Use authoritative token usage from the result message if available
+    const resultUsage = msg.usage as
+      | {
+          input_tokens?: number;
+          output_tokens?: number;
+          cache_read_input_tokens?: number;
+          cache_creation_input_tokens?: number;
+        }
+      | undefined;
+    if (resultUsage) {
+      const inputTotal =
+        (resultUsage.input_tokens || 0) +
+        (resultUsage.cache_read_input_tokens || 0) +
+        (resultUsage.cache_creation_input_tokens || 0);
+      this._inputTokens = inputTotal;
+      this._outputTokens = resultUsage.output_tokens || 0;
+      this._currentMsgOutputTokens = 0;
+    }
+
+    // Emit cost and stats for external tracking
+    if (msg.total_cost_usd != null || msg.num_turns != null) {
+      this.emit("result-stats", {
+        totalCostUsd: msg.total_cost_usd as number | undefined,
+        numTurns: msg.num_turns as number | undefined,
+        durationMs: msg.duration_ms as number | undefined,
+        durationApiMs: msg.duration_api_ms as number | undefined,
+      });
+    }
+
+    if (subtype === "success") {
+      if (result && !this.planEmitted) {
+        const trimmedResult = result.trim();
+        if (!trimmedResult.startsWith("{") && !trimmedResult.startsWith("[")) {
+          this.planEmitted = true;
+          this.emit("output", {
+            timestamp: new Date().toISOString(),
+            type: "plan",
+            content: result,
+          } satisfies OutputEntry);
+          this.emit("plan-text", result);
+        }
+      }
+      // Fallback: use accumulated assistant text as plan
+      if (!this.planEmitted && this.assistantTextBuffer.trim()) {
+        this.planEmitted = true;
+        this.emit("output", {
+          timestamp: new Date().toISOString(),
+          type: "plan",
+          content: this.assistantTextBuffer.trim(),
+        } satisfies OutputEntry);
+        this.emit("plan-text", this.assistantTextBuffer.trim());
+      }
+      // Dev phase: emit summary
+      if (this.options.phase === "dev") {
+        const summary = result?.trim() || this.assistantTextBuffer.trim();
+        if (summary) {
+          this.emit("summary-text", summary);
+        }
+      }
+      this.emit("plan-complete");
+    } else if (subtype?.startsWith("error")) {
+      if (result) {
+        this.emit("output", {
+          timestamp: new Date().toISOString(),
+          type: "error",
+          content: result,
+        } satisfies OutputEntry);
+      }
+      this.emit("error", result || `Session ended with: ${subtype}`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Additional SDK message type handlers
+  // ---------------------------------------------------------------------------
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleRateLimitEvent(msg: any): void {
+    const message = (msg.message as string) || (msg.reason as string) || "Rate limit reached";
+    const retryAfter = msg.retry_after_ms as number | undefined;
+    const parts = [message];
+    if (retryAfter) {
+      parts.push(`(retry in ${(retryAfter / 1000).toFixed(1)}s)`);
+    }
+    this.emit("output", {
+      timestamp: new Date().toISOString(),
+      type: "rate-limit",
+      content: parts.join(" "),
+    } satisfies OutputEntry);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleToolProgress(msg: any): void {
+    const toolName = (msg.tool_name as string) || (msg.name as string) || "";
+    const elapsed = msg.elapsed_ms as number | undefined;
+    const description = (msg.description as string) || (msg.message as string) || "";
+    const parts: string[] = [];
+    if (toolName) parts.push(`[${toolName}]`);
+    if (description) parts.push(description);
+    if (elapsed != null) parts.push(`(${(elapsed / 1000).toFixed(1)}s)`);
+
+    if (parts.length > 0) {
+      this.emit("output", {
+        timestamp: new Date().toISOString(),
+        type: "progress",
+        content: parts.join(" "),
+        toolName: toolName || undefined,
+      } satisfies OutputEntry);
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleToolUseSummary(msg: any): void {
+    const summary = (msg.summary as string) || (msg.message as string) || "";
+    const toolName = (msg.tool_name as string) || (msg.name as string) || "";
+    if (summary) {
+      this.emit("output", {
+        timestamp: new Date().toISOString(),
+        type: "system",
+        content: toolName ? `[${toolName}] ${summary}` : summary,
+      } satisfies OutputEntry);
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handlePromptSuggestion(msg: any): void {
+    const suggestions: string[] = [];
+    if (Array.isArray(msg.suggestions)) {
+      for (const s of msg.suggestions) {
+        if (typeof s === "string") suggestions.push(s);
+        else if (s?.prompt) suggestions.push(s.prompt as string);
+      }
+    } else if (msg.prompt) {
+      suggestions.push(msg.prompt as string);
+    }
+
+    if (suggestions.length > 0) {
+      this.emit("prompt-suggestions", suggestions);
+      this.emit("output", {
+        timestamp: new Date().toISOString(),
+        type: "system",
+        content: `Suggested follow-ups: ${suggestions.join(" | ")}`,
+        suggestions,
+      } satisfies OutputEntry);
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleAuthStatus(msg: any): void {
+    const status = (msg.status as string) || "unknown";
+    const message = (msg.message as string) || (msg.reason as string) || "";
+    const content = message ? `Auth ${status}: ${message}` : `Auth status: ${status}`;
+
+    // Treat auth failures as errors
+    const isError = status === "expired" || status === "failed" || status === "invalid";
+    this.emit("output", {
+      timestamp: new Date().toISOString(),
+      type: isError ? "error" : "system",
+      content,
+    } satisfies OutputEntry);
+
+    if (isError) {
+      this.emit("error", content);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // System message formatting (preserved from original)
+  // ---------------------------------------------------------------------------
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private formatSystemMessage(msg: any): string {
+    const subtype = msg.subtype as string | undefined;
+
+    switch (subtype) {
+      case "init":
+        return `Session started (${msg.session_id})`;
+
+      case "task_started": {
+        const description = msg.description as string | undefined;
+        const taskType = msg.task_type as string | undefined;
+        const label = taskType === "local_agent" ? "Subagent" : taskType || "Task";
+        return description ? `${label} started: ${description}` : `${label} started`;
+      }
+
+      case "task_progress": {
+        const description = msg.description as string | undefined;
+        const toolName = msg.last_tool_name as string | undefined;
+        if (description) {
+          return toolName ? `[${toolName}] ${description}` : description;
+        }
+        return "";
+      }
+
+      case "task_notification": {
+        const status = (msg.status as string) || "unknown";
+        const summary = (msg.summary as string) || "";
+        const msgUsage = msg.usage as { total_tokens?: number; tool_uses?: number; duration_ms?: number } | undefined;
+        const parts = [summary ? `Task ${status}: ${summary}` : `Task ${status}`];
+        if (msgUsage) {
+          const details: string[] = [];
+          if (msgUsage.tool_uses != null) details.push(`${msgUsage.tool_uses} tool uses`);
+          if (msgUsage.duration_ms != null) details.push(`${(msgUsage.duration_ms / 1000).toFixed(1)}s`);
+          if (msgUsage.total_tokens != null) details.push(`${msgUsage.total_tokens.toLocaleString()} tokens`);
+          if (details.length > 0) parts.push(`(${details.join(", ")})`);
+        }
+        return parts.join(" ");
+      }
+
+      case "task_completed": {
+        const description = msg.description as string | undefined;
+        return description ? `Task completed: ${description}` : "Task completed";
+      }
+
+      case "api_request":
+        return "";
+
+      default: {
+        if (msg.message && typeof msg.message === "string") {
+          return msg.message;
+        }
+        return this.extractReadableContent(msg);
+      }
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private extractReadableContent(msg: any): string {
+    const readableKeys = ["description", "summary", "message", "status", "error", "reason", "text", "name", "title"];
+    const suppressKeys = new Set([
+      "type",
+      "subtype",
+      "task_id",
+      "tool_use_id",
+      "uuid",
+      "session_id",
+      "prompt",
+      "content",
+      "usage",
+      "task_type",
+    ]);
+
+    const parts: string[] = [];
+    for (const key of readableKeys) {
+      const val = msg[key];
+      if (val && typeof val === "string") {
+        parts.push(val);
+      }
+    }
+    if (parts.length > 0) return parts.join(" — ");
+
+    const remaining: string[] = [];
+    for (const [key, val] of Object.entries(msg)) {
+      if (suppressKeys.has(key)) continue;
+      if (val == null || typeof val === "object") continue;
+      remaining.push(`${key}: ${String(val)}`);
+    }
+    return remaining.length > 0 ? remaining.join(", ") : "";
+  }
+
+  // ---------------------------------------------------------------------------
+  // Question emission (preserved from original)
+  // ---------------------------------------------------------------------------
+
+  private emitQuestion(input: Record<string, unknown>): void {
+    if (Array.isArray(input.questions) && (input.questions as Array<unknown>).length > 0) {
+      const q = (input.questions as Array<Record<string, unknown>>)[0];
+      const questionText = (q.question as string) || (q.text as string) || "";
+      const header = q.header as string | undefined;
+      const multiSelect = q.multiSelect as boolean | undefined;
+
+      let options: QuestionOption[] | undefined;
+      if (Array.isArray(q.options)) {
+        options = (q.options as Array<Record<string, unknown>>).map((opt) => {
+          if (typeof opt === "string") return { label: opt };
+          return {
+            label: (opt.label as string) || String(opt),
+            description: opt.description as string | undefined,
+          };
+        });
+      }
+
+      this.emit("needs-input", {
+        questionId: uuidv4(),
+        text: questionText,
+        header,
+        options,
+        multiSelect,
+        timestamp: new Date().toISOString(),
+      } satisfies PendingQuestion);
+    } else {
+      const questionText = (input.question as string) || (input.text as string) || JSON.stringify(input);
+      let options: QuestionOption[] | undefined;
+      if (Array.isArray(input.options)) {
+        options = (input.options as Array<unknown>).map((opt) => {
+          if (typeof opt === "string") return { label: opt };
+          const o = opt as Record<string, unknown>;
+          return {
+            label: (o.label as string) || String(opt),
+            description: o.description as string | undefined,
+          };
+        });
+      }
+
+      this.emit("needs-input", {
+        questionId: uuidv4(),
+        text: questionText,
+        options,
+        timestamp: new Date().toISOString(),
+      } satisfies PendingQuestion);
+    }
   }
 }

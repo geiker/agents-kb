@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import type { Project, Job, OutputEntry, RawMessage, PendingQuestion, AppSettings, CliHealthStatus } from '../types/index';
-import { DEFAULT_SETTINGS } from '../types/index';
+import type { Project, Job, OutputEntry, RawMessage, PendingQuestion, AppSettings, CliHealthStatus, ModelOption } from '../types/index';
+import { DEFAULT_SETTINGS, MODEL_CATALOG } from '../types/index';
 
 interface KanbanState {
   cliHealth: CliHealthStatus | null;
@@ -14,6 +14,8 @@ interface KanbanState {
   showSkillsPanel: boolean;
   promptHistoryJobId: string | null;
   settings: AppSettings;
+  /** Dynamic model catalog from the SDK (updated after first session starts) */
+  availableModels: ModelOption[];
 
   // Separate streaming data — not on jobs array
   outputLogs: Record<string, OutputEntry[]>;
@@ -43,6 +45,7 @@ interface KanbanState {
   setShowSkillsPanel: (show: boolean) => void;
   setPromptHistoryJobId: (id: string | null) => void;
   setSettings: (settings: AppSettings) => void;
+  setAvailableModels: (models: ModelOption[]) => void;
 
   // CLI Health
   checkCliHealth: () => Promise<void>;
@@ -63,6 +66,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   showSkillsPanel: false,
   promptHistoryJobId: null,
   settings: DEFAULT_SETTINGS,
+  availableModels: MODEL_CATALOG,
   outputLogs: {},
   rawMessages: {},
 
@@ -160,6 +164,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   setShowSkillsPanel: (show) => set({ showSkillsPanel: show }),
   setPromptHistoryJobId: (id) => set({ promptHistoryJobId: id }),
   setSettings: (settings) => set({ settings }),
+  setAvailableModels: (models) => set({ availableModels: models }),
 
   checkCliHealth: async () => {
     set({ cliHealthLoading: true });
@@ -183,6 +188,16 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
     ]);
     get().setJobs(jobs);
     set({ projects, settings });
+
+    // Fetch dynamic model catalog (uses cached SDK data if available)
+    api.modelsList().then((models) => {
+      if (models?.length) get().setAvailableModels(models);
+    }).catch(() => { /* fallback to hardcoded catalog */ });
+
+    // Listen for dynamic model updates from the SDK (pushed after first session starts)
+    api.onModelsUpdated((models) => {
+      if (models?.length) get().setAvailableModels(models);
+    });
 
     // Subscribe to events
     api.onJobStatusChanged((job) => {

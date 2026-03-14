@@ -35,6 +35,11 @@ const api: ElectronAPI = {
   jobsRejectJob: (jobId, snapshotIndex) => ipcRenderer.invoke('jobs:reject-job', jobId, snapshotIndex),
   jobsFollowUp: (jobId, prompt) => ipcRenderer.invoke('jobs:follow-up', jobId, prompt),
 
+  // File Rewind
+  jobsRewindPreview: (jobId, userMessageId) => ipcRenderer.invoke('jobs:rewind-preview', jobId, userMessageId),
+  jobsRewindFiles: (jobId, userMessageId) => ipcRenderer.invoke('jobs:rewind-files', jobId, userMessageId),
+  jobsRewindMessages: (jobId) => ipcRenderer.invoke('jobs:rewind-messages', jobId),
+
   // Files
   filesList: (projectId) => ipcRenderer.invoke('files:list', projectId),
 
@@ -76,6 +81,22 @@ const api: ElectronAPI = {
 
   // Skills
   skillsList: (projectId?) => ipcRenderer.invoke('skills:list', projectId),
+
+  // Models
+  modelsList: () => ipcRenderer.invoke('models:list'),
+
+  // Account
+  accountInfo: () => ipcRenderer.invoke('account:info'),
+  onAccountUpdated: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: Parameters<typeof callback>[0]) => callback(data);
+    ipcRenderer.on('account:updated', handler);
+    return () => ipcRenderer.removeListener('account:updated', handler);
+  },
+  onModelsUpdated: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: Parameters<typeof callback>[0]) => callback(data);
+    ipcRenderer.on('models:updated', handler);
+    return () => ipcRenderer.removeListener('models:updated', handler);
+  },
 
   // App
   appGetVersion: () => ipcRenderer.invoke('app:get-version'),

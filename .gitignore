@@ -6,6 +6,7 @@ release/
 *.js.map
 .DS_Store
 .cursor/
+.claude/
 
 AGENTS.md
 CLAUDE.md

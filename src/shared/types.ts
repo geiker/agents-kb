@@ -7,6 +7,16 @@ export interface CliHealthStatus {
   error?: string;
 }
 
+/* ─── Account Info (from SDK initializationResult) ─── */
+
+export interface AccountInfo {
+  email?: string;
+  organization?: string;
+  subscriptionType?: string;
+  tokenSource?: string;
+  apiKeySource?: string;
+}
+
 /* ─── Settings ─── */
 
 export type ThemeMode = "system" | "light" | "dark";
@@ -33,19 +43,27 @@ export interface EffortOption {
   badge: string;
 }
 
+/** Hardcoded fallback — used until dynamic models are fetched from the SDK */
 export const MODEL_CATALOG: ModelOption[] = [
-  { value: "default", label: "Default", badge: "" },
   { value: "opus", label: "Opus", badge: "OPUS" },
   { value: "sonnet", label: "Sonnet", badge: "SONNET" },
   { value: "haiku", label: "Haiku", badge: "HAIKU" },
 ];
 
+/** Model info fetched dynamically from the Agent SDK */
+export interface DynamicModelInfo {
+  value: string;
+  displayName: string;
+  description: string;
+  supportsEffort?: boolean;
+  supportedEffortLevels?: string[];
+}
+
 export const EFFORT_CATALOG: EffortOption[] = [
-  { value: "default", label: "Default", badge: "" },
   { value: "low", label: "Low", badge: "LOW" },
   { value: "medium", label: "Medium", badge: "MED" },
   { value: "high", label: "High", badge: "HIGH" },
-  // { value: "max", label: "Max", badge: "MAX" },
+  { value: "max", label: "Max", badge: "MAX" },
 ];
 
 export type ModelChoice = (typeof MODEL_CATALOG)[number]["value"];
@@ -145,10 +163,10 @@ export const DEFAULT_SHORTCUTS: ShortcutBinding[] = [
 
 export const DEFAULT_COMMIT_PROMPT =
   "Generate a concise conventional commit message for the current uncommitted changes.";
-export const COMMIT_PROMPT_SUFFIX = " Output ONLY the commit message, nothing else.";
+export const COMMIT_PROMPT_SUFFIX = "";
 
 export const DEFAULT_TITLE_PROMPT =
-  'Generate a very short task title (3-8 words) for this task. Output ONLY the title, no quotes, no formatting, no punctuation at the end.';
+  'Generate a very short task title (3-8 words) for this task.';
 export const DEFAULT_ROLLBACK_PROMPT =
   'Revert the requested Agents-KB job changes by restoring the listed files to the provided target contents. Preserve unrelated newer changes whenever possible. If you cannot do this safely, explain why and make no changes.';
 
@@ -163,8 +181,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showShortcutHints: false,
   shortcuts: [...DEFAULT_SHORTCUTS],
   promptConfigs: { ...DEFAULT_PROMPT_CONFIGS },
-  defaultModel: "default",
-  defaultEffort: "default",
+  defaultModel: "opus",
+  defaultEffort: "medium",
   alwaysShowModelEffort: false,
   showTokenUsage: false,
   showModelEffortInNewJob: false,
@@ -173,6 +191,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
   deleteCompletedJobsOnCommit: true,
   permissionMode: 'bypassPermissions',
 };
+
+/* ─── File Rewind ─── */
+
+export interface RewindFilesResult {
+  canRewind: boolean;
+  error?: string;
+  filesChanged?: string[];
+  insertions?: number;
+  deletions?: number;
+}
 
 /* ─── Token Usage ─── */
 
@@ -194,14 +222,6 @@ export interface Skill {
 
 export type KanbanColumn = "planning" | "development" | "done";
 export type JobStatus = "running" | "waiting-input" | "plan-ready" | "completed" | "error" | "rejected";
-
-export interface GitSnapshot {
-  commitSha: string;
-  hadDirtyTree: boolean;
-  tempCommitSha?: string;
-  refName: string;
-  label: string;
-}
 
 export type JobFileSnapshotKind = 'text' | 'binary' | 'created' | 'deleted';
 
@@ -225,7 +245,6 @@ export interface JobStepSnapshot {
   startedAt: string;
   completedAt: string;
   appliedSeq: number;
-  gitSnapshotIndex?: number;
   files: JobFileSnapshot[];
   rejectedAt?: string;
 }
@@ -265,9 +284,11 @@ export interface Project {
 
 export interface OutputEntry {
   timestamp: string;
-  type: "text" | "thinking" | "tool-use" | "tool-result" | "system" | "error" | "plan";
+  type: "text" | "thinking" | "tool-use" | "tool-result" | "system" | "error" | "plan" | "rate-limit" | "progress";
   content: string;
   toolName?: string;
+  /** Follow-up prompt suggestions from the SDK */
+  suggestions?: string[];
 }
 
 export interface QuestionOption {
@@ -330,12 +351,11 @@ export interface Job {
   developmentElapsedMs?: number;
   planningTokens?: PhaseTokenUsage;
   developmentTokens?: PhaseTokenUsage;
-  gitSnapshots?: GitSnapshot[];
+  userMessageUuids?: string[];
   stepSnapshots?: JobStepSnapshot[];
   diffText?: string;
   rejectedAt?: string;
   committedSha?: string;
-  generatedCommitMessage?: string;
   editedFiles?: string[];
   model?: ModelChoice;
   effort?: EffortLevel;

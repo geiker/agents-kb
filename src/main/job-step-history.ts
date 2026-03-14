@@ -32,7 +32,6 @@ interface PendingStepState {
   label: string;
   order: number;
   startedAt: string;
-  gitSnapshotIndex?: number;
   files: Map<string, PendingTrackedFile>;
 }
 
@@ -219,13 +218,12 @@ export function normalizeToolPath(projectPath: string, filePath: string): string
 export class JobStepHistoryTracker {
   private pendingSteps = new Map<string, PendingStepState>();
 
-  startStep(jobId: string, label: string, order: number, gitSnapshotIndex?: number): void {
+  startStep(jobId: string, label: string, order: number): void {
     this.pendingSteps.set(jobId, {
       id: uuidv4(),
       label,
       order,
       startedAt: new Date().toISOString(),
-      gitSnapshotIndex,
       files: new Map(),
     });
   }
@@ -286,7 +284,6 @@ export class JobStepHistoryTracker {
       startedAt: step.startedAt,
       completedAt: new Date().toISOString(),
       appliedSeq,
-      gitSnapshotIndex: step.gitSnapshotIndex,
       files,
     };
   }

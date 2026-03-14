@@ -8,8 +8,8 @@ import { StreamingLog } from './StreamingLog';
 import { DiffViewer } from './DiffViewer';
 import { MentionInput, MentionTextarea } from './MentionInput';
 import { formatDuration, useNow } from '../utils/duration';
-import type { Job, FollowUp, GitSnapshot, AppSettings, OutputEntry, PhaseTokenUsage } from '../types/index';
-import { MODEL_CATALOG, EFFORT_CATALOG, getProjectColor } from '../types/index';
+import type { Job, FollowUp, AppSettings, OutputEntry, PhaseTokenUsage } from '../types/index';
+import { EFFORT_CATALOG, getProjectColor } from '../types/index';
 import { BrainIcon, BranchIcon, TrashIcon, XIcon } from './Icons';
 import { PlanMarkdown } from './PlanMarkdown';
 
@@ -112,16 +112,18 @@ export function JobDetailPanel() {
     }
   };
 
-  const handleRejectJob = async (snapshotIndex?: number) => {
-    const snapshots = job.gitSnapshots || [];
-    const target = snapshotIndex != null ? snapshots[snapshotIndex] : snapshots[0];
-    const label = target?.label || 'original state';
+  const handleRejectJob = async (rewindIndex?: number) => {
+    const uuids = job.userMessageUuids || [];
+    const targetIndex = rewindIndex ?? 0;
+    const label = targetIndex === 0
+      ? 'original state'
+      : `after follow-up #${targetIndex}`;
     const confirmed = window.confirm(
       `Roll back to "${label}"? This will undo all file changes made after that point. This cannot be undone.`
     );
     if (!confirmed) return;
     try {
-      await api.jobsRejectJob(job.id, snapshotIndex);
+      await api.jobsRejectJob(job.id, targetIndex);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to reject job';
       window.alert(message);
@@ -133,12 +135,12 @@ export function JobDetailPanel() {
   };
 
   const hasUncommittedChanges =
-    (job.gitSnapshots?.length ?? 0) > 0 && !job.committedSha && job.status !== 'rejected' && editedFiles.length > 0;
+    (job.userMessageUuids?.length ?? 0) > 0 && !job.committedSha && job.status !== 'rejected' && editedFiles.length > 0;
 
-  const handleDelete = async (rollback?: boolean) => {
+  const handleDelete = async () => {
     setDeleteLoading(true);
     try {
-      await api.jobsDelete(job.id, rollback != null ? { rollback } : undefined);
+      await api.jobsDelete(job.id);
       removeJob(job.id);
       setConfirmDelete(false);
     } catch (err: unknown) {
@@ -169,9 +171,9 @@ export function JobDetailPanel() {
   const isDone = job.status === 'completed' || job.status === 'rejected';
   const isPlanReady = job.status === 'plan-ready';
   const hasSummary = !!job.summaryText && isDone;
-  const hasSnapshots = (job.gitSnapshots?.length ?? 0) > 0;
+  const hasRewindPoints = (job.userMessageUuids?.length ?? 0) > 0;
   const hasStepSnapshots = (job.stepSnapshots?.length ?? 0) > 0;
-  const hasDiff = isDone && (hasStepSnapshots || hasSnapshots || !!job.diffText);
+  const hasDiff = isDone && (hasStepSnapshots || hasRewindPoints || !!job.diffText);
   const canDelete = job.status !== 'running' && job.status !== 'waiting-input';
 
   return (
@@ -234,6 +236,20 @@ export function JobDetailPanel() {
               </button>
             )}
 
+            {/* Roll Back */}
+            {canDelete && hasUncommittedChanges && (
+              <button
+                onClick={() => handleRejectJob(0)}
+                className="p-1.5 text-content-tertiary hover:text-semantic-warning transition-colors rounded"
+                aria-label="Roll back changes"
+                title="Roll back all changes"
+              >
+                <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                  <path d="M2 6h5M4.5 3.5L2 6l2.5 2.5M10 3v6" />
+                </svg>
+              </button>
+            )}
+
             {/* Delete */}
             {canDelete && (
               <div className="relative">
@@ -250,52 +266,26 @@ export function JobDetailPanel() {
                 {confirmDelete && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => !deleteLoading && setConfirmDelete(false)} />
-                    <div className={`absolute right-0 top-full mt-1 z-50 bg-surface-elevated border border-chrome rounded-lg shadow-lg p-3 ${hasUncommittedChanges ? 'w-[240px]' : 'w-[200px]'}`}>
+                    <div className="absolute right-0 top-full mt-1 z-50 bg-surface-elevated border border-chrome rounded-lg shadow-lg p-3 w-[200px]">
                       <p className="text-xs text-content-secondary mb-2">
-                        {hasUncommittedChanges
-                          ? 'This job has uncommitted changes. Roll back before deleting?'
-                          : 'Delete this job permanently?'}
+                        Delete this job permanently?
                       </p>
-                      {hasUncommittedChanges ? (
-                        <div className="flex flex-col gap-1.5">
-                          <button
-                            onClick={() => handleDelete(true)}
-                            disabled={deleteLoading}
-                            className="w-full px-2 py-1.5 text-xs rounded bg-semantic-error text-white hover:bg-semantic-error/80 disabled:opacity-50 transition-colors"
-                          >
-                            {deleteLoading ? 'Rolling back...' : 'Delete & Roll Back'}
-                          </button>
-                          <button
-                            onClick={() => handleDelete(false)}
-                            disabled={deleteLoading}
-                            className="w-full px-2 py-1.5 text-xs rounded border border-chrome text-content-secondary hover:bg-surface-tertiary disabled:opacity-50 transition-colors"
-                          >
-                            Delete & Keep Changes
-                          </button>
-                          <button
-                            onClick={() => setConfirmDelete(false)}
-                            disabled={deleteLoading}
-                            className="w-full px-2 py-1.5 text-xs rounded text-content-tertiary hover:text-content-secondary transition-colors"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => setConfirmDelete(false)}
-                            className="flex-1 px-2 py-1.5 text-xs rounded border border-chrome text-content-secondary hover:bg-surface-tertiary transition-colors"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            onClick={() => handleDelete()}
-                            className="flex-1 px-2 py-1.5 text-xs rounded bg-semantic-error text-white hover:bg-semantic-error/80 transition-colors"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      )}
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setConfirmDelete(false)}
+                          disabled={deleteLoading}
+                          className="flex-1 px-2 py-1.5 text-xs rounded border border-chrome text-content-secondary hover:bg-surface-tertiary disabled:opacity-50 transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => handleDelete()}
+                          disabled={deleteLoading}
+                          className="flex-1 px-2 py-1.5 text-xs rounded bg-semantic-error text-white hover:bg-semantic-error/80 disabled:opacity-50 transition-colors"
+                        >
+                          {deleteLoading ? 'Deleting...' : 'Delete'}
+                        </button>
+                      </div>
                     </div>
                   </>
                 )}
@@ -319,7 +309,7 @@ export function JobDetailPanel() {
             prompt={job.prompt}
             jobTitle={job.title}
             followUps={job.followUps}
-            snapshots={job.status === 'completed' ? job.gitSnapshots : undefined}
+            rewindPoints={job.status === 'completed' ? job.userMessageUuids : undefined}
             onRollback={job.status === 'completed' ? handleRejectJob : undefined}
             isActive={isActive}
           />
@@ -772,7 +762,8 @@ function DetailPhaseDurations({ job, now, settings }: { job: Job; now: number; s
   const showBadges = settings.alwaysShowModelEffort
     || effectiveModel !== settings.defaultModel
     || effectiveEffort !== settings.defaultEffort;
-  const modelEntry = MODEL_CATALOG.find((o) => o.value === effectiveModel);
+  const availableModels = useKanbanStore((s) => s.availableModels);
+  const modelEntry = availableModels.find((o) => o.value === effectiveModel);
   const effortEntry = EFFORT_CATALOG.find((o) => o.value === effectiveEffort);
   const modelLabel = modelEntry?.label && effectiveModel !== 'default'
     ? modelEntry.label
@@ -815,7 +806,7 @@ function DetailPhaseDurations({ job, now, settings }: { job: Job; now: number; s
             </span>
           )}
           {effortLabel && (
-            <span className="flex items-center gap-1 text-content-tertiary" title={`Effort: ${effortLabel}`}>
+            <span className="flex items-center gap-1 text-content-tertiary" title={`Thinking: ${effortLabel}`}>
               <BrainIcon size={11} className="shrink-0 opacity-60" />
               <span className="text-[10px] font-medium uppercase tracking-wider">{effortLabel}</span>
             </span>
@@ -847,28 +838,25 @@ function PromptTimeline({
   prompt,
   jobTitle,
   followUps,
-  snapshots,
+  rewindPoints,
   onRollback,
   isActive,
 }: {
   prompt: string;
   jobTitle?: string;
   followUps?: FollowUp[];
-  snapshots?: GitSnapshot[];
+  rewindPoints?: string[];
   onRollback?: (index: number) => void;
   isActive?: boolean;
 }) {
   const hasFollowUps = followUps && followUps.length > 0;
-  const canRollback = snapshots && snapshots.length > 0 && onRollback;
+  const canRollback = rewindPoints && rewindPoints.length > 0 && onRollback;
 
   // Simple case: no follow-ups and no rollback
   if (!hasFollowUps && !canRollback) {
     return (
       <div className="mt-1">
         <div className="text-sm font-semibold text-content-primary leading-snug">{jobTitle || prompt}</div>
-        {jobTitle && (
-          <div className="text-xs text-content-tertiary mt-0.5 truncate">{prompt}</div>
-        )}
       </div>
     );
   }
@@ -877,9 +865,6 @@ function PromptTimeline({
     <div className="mt-1">
       {/* Original title — prominent */}
       <div className="text-sm font-semibold text-content-primary leading-snug">{jobTitle || prompt}</div>
-      {jobTitle && (
-        <div className="text-xs text-content-tertiary mt-0.5 truncate">{prompt}</div>
-      )}
 
       {/* Follow-ups */}
       {hasFollowUps && (
@@ -888,8 +873,8 @@ function PromptTimeline({
             const isLast = i === followUps!.length - 1;
             const isCurrent = isLast && isActive;
             const isRolledBack = !!f.rolledBack;
-            // Snapshot index is i+1 because index 0 is the original task
-            const snapshot = canRollback && snapshots[i + 1] ? snapshots[i + 1] : null;
+            // Rewind point index is i+1 because index 0 is the original task
+            const hasRewindPoint = canRollback && i + 1 < rewindPoints.length;
 
             return (
               <div key={i} className={`flex items-center gap-1.5 group/step ${isRolledBack ? 'opacity-50' : ''}`}>
@@ -905,11 +890,11 @@ function PromptTimeline({
                 <span className={`text-xs leading-snug truncate min-w-0 flex-1 ${isRolledBack ? 'line-through text-content-tertiary' : isCurrent ? 'font-medium text-content-primary' : 'text-content-secondary'}`}>
                   {f.title || f.prompt}
                 </span>
-                {!isRolledBack && snapshot && onRollback && (
+                {!isRolledBack && hasRewindPoint && onRollback && (
                   <button
                     onClick={() => onRollback(i + 1)}
                     className="shrink-0 p-1 rounded text-content-tertiary/40 hover:text-semantic-error hover:bg-semantic-error-bg/10 opacity-0 group-hover/step:opacity-100 transition-all"
-                    title={`Roll back to "${snapshot.label}"`}
+                    title={`Roll back to after follow-up #${i}`}
                   >
                     <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                       <path d="M2 6h5M4.5 3.5L2 6l2.5 2.5M10 3v6" />

@@ -5,8 +5,8 @@ import { useElectronAPI } from '../hooks/useElectronAPI';
 import { KbdRaw } from './Kbd';
 import { SegmentedPicker } from './SegmentedPicker';
 import { CheckForUpdatesButton } from './UpdateButton';
-import type { AppSettings, ShortcutBinding, ThemeMode, PreferredEditor } from '../types/index';
-import { DEFAULT_SETTINGS, MODEL_CATALOG, EFFORT_CATALOG, PERMISSION_MODE_CATALOG } from '../types/index';
+import type { AppSettings, ShortcutBinding, ThemeMode, PreferredEditor, AccountInfo } from '../types/index';
+import { DEFAULT_SETTINGS, EFFORT_CATALOG, PERMISSION_MODE_CATALOG } from '../types/index';
 import { XIcon } from './Icons';
 
 const isMac =
@@ -35,11 +35,13 @@ function eventToKeys(e: KeyboardEvent): string | null {
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const settings = useKanbanStore((s) => s.settings);
   const setSettings = useKanbanStore((s) => s.setSettings);
+  const availableModels = useKanbanStore((s) => s.availableModels);
   const api = useElectronAPI();
 
   const [local, setLocal] = useState<AppSettings>(() => structuredClone(settings));
   const [recordingId, setRecordingId] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string>('');
+  const [accountInfo, setAccountInfo] = useState<AccountInfo | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const localRef = useRef(local);
   const saveQueueRef = useRef(Promise.resolve());
@@ -50,6 +52,9 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     window.electronAPI.appGetVersion().then(setAppVersion).catch(() => { });
+    window.electronAPI.accountInfo().then((info) => { if (info) setAccountInfo(info); }).catch(() => { });
+    const unsub = window.electronAPI.onAccountUpdated(setAccountInfo);
+    return unsub;
   }, []);
 
   // Persist changes
@@ -167,6 +172,38 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         {/* Content */}
         <div className="px-5 py-4 space-y-5 overflow-y-auto max-h-[60vh]">
 
+          {/* Account */}
+          {accountInfo && (
+            <>
+              <div>
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-content-tertiary">
+                  Account
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-[13px] text-content-primary truncate">
+                    {accountInfo.email || 'Unknown'}
+                  </div>
+                  <div className="text-[11px] text-content-tertiary mt-0.5">
+                    {[
+                      accountInfo.organization,
+                      accountInfo.subscriptionType,
+                    ].filter(Boolean).join(' \u00B7 ') || 'Personal account'}
+                  </div>
+                </div>
+                {accountInfo.tokenSource && (
+                  <span className="text-[10px] font-medium text-content-tertiary bg-surface-tertiary/50 rounded-full px-2 py-0.5 leading-none shrink-0">
+                    {accountInfo.tokenSource}
+                  </span>
+                )}
+              </div>
+
+              <div className="border-t border-chrome-subtle/40" />
+            </>
+          )}
+
           {/* Appearance */}
           <div>
             <span className="text-[10px] font-semibold uppercase tracking-wider text-content-tertiary">
@@ -266,7 +303,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               </div>
             </div>
             <SegmentedPicker
-              options={MODEL_CATALOG}
+              options={availableModels}
               value={local.defaultModel}
               onChange={(defaultModel) => patchSettings({ defaultModel })}
             />
@@ -274,9 +311,9 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-[13px] text-content-primary">Default Effort</div>
+              <div className="text-[13px] text-content-primary">Default Thinking</div>
               <div className="text-[11px] text-content-tertiary mt-0.5">
-                Effort level for new jobs unless overridden
+                Thinking level for new jobs unless overridden
               </div>
             </div>
             <SegmentedPicker
@@ -288,7 +325,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-[13px] text-content-primary">Always show model/effort</div>
+              <div className="text-[13px] text-content-primary">Always show model/thinking</div>
               <div className="text-[11px] text-content-tertiary mt-0.5">
                 Display badges on cards even when using defaults
               </div>
@@ -308,9 +345,9 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-[13px] text-content-primary">Show model/effort in New Job</div>
+              <div className="text-[13px] text-content-primary">Show model/thinking in New Job</div>
               <div className="text-[11px] text-content-tertiary mt-0.5">
-                Display model and effort pickers when creating a job
+                Display model and thinking pickers when creating a job
               </div>
             </div>
             <Toggle checked={local.showModelEffortInNewJob} onChange={() => patchSettings((current) => ({ ...current, showModelEffortInNewJob: !current.showModelEffortInNewJob }))} />
