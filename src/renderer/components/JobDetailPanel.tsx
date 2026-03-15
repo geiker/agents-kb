@@ -3,17 +3,69 @@ import { useKanbanStore } from '../hooks/useKanbanStore';
 import { useJobOutput } from '../hooks/useJobOutput';
 import { useElectronAPI } from '../hooks/useElectronAPI';
 import { useShortcut } from '../hooks/useShortcut';
-import { useImageAttachment } from '../hooks/useImageAttachment';
+import { useImageAttachment, draftImageToAttachedImage, attachedImageToDraftImage } from '../hooks/useImageAttachment';
 import { Kbd } from './Kbd';
 import { StreamingLog } from './StreamingLog';
 import { DiffViewer } from './DiffViewer';
 import { MentionInput, MentionTextarea } from './MentionInput';
 import { ImageAttachmentBar } from './ImageAttachmentBar';
 import { formatDuration, useNow } from '../utils/duration';
-import type { Job, JobImage, FollowUp, AppSettings, OutputEntry, PhaseTokenUsage, SubQuestion } from '../types/index';
-import { EFFORT_CATALOG, getProjectColor } from '../types/index';
-import { BrainIcon, BranchIcon, TrashIcon, XIcon } from './Icons';
+import type { Job, JobImage, JobComposerDraft, PendingQuestionDraft, JobDetailDrafts, FollowUp, AppSettings, OutputEntry, PhaseTokenUsage, SubQuestion } from '../types/index';
+import { getProjectColor, getThinkingDisplay, normalizeEffortForThinking } from '../types/index';
+import { BrainIcon, BranchIcon, StopIcon, TrashIcon, XIcon } from './Icons';
 import { PlanMarkdown } from './PlanMarkdown';
+
+type DraftSectionKey = keyof JobDetailDrafts;
+
+function buildComposerDraft(text: string, images: ReturnType<typeof useImageAttachment>['images']): JobComposerDraft | undefined {
+  if (!text.trim() && images.length === 0) return undefined;
+  return {
+    text,
+    images: images.map(attachedImageToDraftImage),
+  };
+}
+
+function buildPendingQuestionDraft(
+  questionId: string | undefined,
+  currentStep: number,
+  responseText: string,
+  selectedOptions: Set<string>,
+  questionAnswers: Record<string, string>,
+  questionSelections: Record<string, Set<string>>,
+): PendingQuestionDraft | undefined {
+  if (!questionId) return undefined;
+
+  const normalizedAnswers = Object.fromEntries(
+    Object.entries(questionAnswers).filter(([, value]) => !!value?.trim()),
+  );
+  const normalizedSelections = Object.fromEntries(
+    Object.entries(questionSelections)
+      .map(([key, value]) => [key, Array.from(value)] as const)
+      .filter(([, value]) => value.length > 0),
+  );
+  const selected = Array.from(selectedOptions);
+  const hasContent =
+    !!responseText.trim() ||
+    selected.length > 0 ||
+    Object.keys(normalizedAnswers).length > 0 ||
+    Object.keys(normalizedSelections).length > 0 ||
+    currentStep > 0;
+
+  if (!hasContent) return undefined;
+
+  return {
+    questionId,
+    currentStep,
+    responseText,
+    selectedOptions: selected,
+    questionAnswers: normalizedAnswers,
+    questionSelections: normalizedSelections,
+  };
+}
+
+function draftImagesToAttachedImages(draft?: JobComposerDraft): ReturnType<typeof useImageAttachment>['images'] {
+  return (draft?.images || []).map(draftImageToAttachedImage);
+}
 
 export function JobDetailPanel() {
   const selectedJobId = useKanbanStore((s) => s.selectedJobId);
@@ -23,9 +75,10 @@ export function JobDetailPanel() {
   const removeJob = useKanbanStore((s) => s.removeJob);
   const api = useElectronAPI();
   const [responseText, setResponseText] = useState('');
-  const [selectedOptions, setSelectedOptions] = useState<Set<string>>(new Set());
+  const [selectedOptions, setSelectedOptionsState] = useState<Set<string>>(new Set());
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
-  const [questionSelections, setQuestionSelections] = useState<Record<string, Set<string>>>({});
+  const [questionSelections, setQuestionSelectionsState] = useState<Record<string, Set<string>>>({});
+  const [currentQuestionStep, setCurrentQuestionStepState] = useState(0);
   const [followUpText, setFollowUpText] = useState('');
   const [steerText, setSteerText] = useState('');
   const [planFeedbackText, setPlanFeedbackText] = useState('');
@@ -35,10 +88,162 @@ export function JobDetailPanel() {
   const [doneTab, setDoneTab] = useState<'summary' | 'diff' | 'log'>('summary');
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const draftTimeoutsRef = useRef<Partial<Record<DraftSectionKey, ReturnType<typeof setTimeout>>>>({});
 
   const job = jobs.find((j) => j.id === selectedJobId);
+  const questionId = job?.pendingQuestion?.questionId;
   const outputLog = useJobOutput(selectedJobId || '');
   const liveEditedFiles = useMemo(() => extractEditedFiles(outputLog), [outputLog]);
+  const initialSteerImages = useMemo(() => draftImagesToAttachedImages(job?.jobDetailDrafts?.steer), [job?.id]);
+  const initialPlanImages = useMemo(() => draftImagesToAttachedImages(job?.jobDetailDrafts?.planEdit), [job?.id]);
+  const initialFollowUpImages = useMemo(() => draftImagesToAttachedImages(job?.jobDetailDrafts?.followUp), [job?.id]);
+  const initialRetryImages = useMemo(() => draftImagesToAttachedImages(job?.jobDetailDrafts?.retry), [job?.id]);
+  const responseTextRef = useRef(responseText);
+  const selectedOptionsRef = useRef(selectedOptions);
+  const questionAnswersRef = useRef(questionAnswers);
+  const questionSelectionsRef = useRef(questionSelections);
+  const currentQuestionStepRef = useRef(currentQuestionStep);
+  const questionIdRef = useRef(questionId);
+  const followUpTextRef = useRef(followUpText);
+  const steerTextRef = useRef(steerText);
+  const planFeedbackTextRef = useRef(planFeedbackText);
+  const retryTextRef = useRef(retryText);
+  const steerImagesRef = useRef(initialSteerImages);
+  const planImagesRef = useRef(initialPlanImages);
+  const followUpImagesRef = useRef(initialFollowUpImages);
+  const retryImagesRef = useRef(initialRetryImages);
+  const draftVersionRef = useRef(job?.jobDetailDraftVersion || 0);
+
+  function nextDraftVersion() {
+    const next = Math.max(draftVersionRef.current, job?.jobDetailDraftVersion || 0) + 1;
+    draftVersionRef.current = next;
+    return next;
+  }
+
+  function persistDraftSection(jobId: string, section: DraftSectionKey, value: JobDetailDrafts[DraftSectionKey]) {
+    const version = nextDraftVersion();
+    void api.jobsUpdateDrafts(jobId, { [section]: value } as Partial<JobDetailDrafts>, version).catch((err) => {
+      if (err instanceof Error && err.message === 'Job not found') {
+        return;
+      }
+      console.error('[JobDetailPanel] Failed to persist draft', section, err);
+    });
+  }
+
+  function scheduleDraftSection(jobId: string, section: DraftSectionKey, value: JobDetailDrafts[DraftSectionKey]) {
+    const existing = draftTimeoutsRef.current[section];
+    if (existing) clearTimeout(existing);
+    draftTimeoutsRef.current[section] = setTimeout(() => {
+      draftTimeoutsRef.current[section] = undefined;
+      persistDraftSection(jobId, section, value);
+    }, 250);
+  }
+
+  function flushDraftSection(jobId: string, section: DraftSectionKey, value: JobDetailDrafts[DraftSectionKey]) {
+    const existing = draftTimeoutsRef.current[section];
+    if (existing) {
+      clearTimeout(existing);
+      draftTimeoutsRef.current[section] = undefined;
+    }
+    persistDraftSection(jobId, section, value);
+  }
+
+  const steerImages = useImageAttachment({
+    initialImages: initialSteerImages,
+    onChange: (images) => {
+      steerImagesRef.current = images;
+      if (!job?.id) return;
+      persistDraftSection(job.id, 'steer', buildComposerDraft(steerTextRef.current, images));
+    },
+  });
+  const planImages = useImageAttachment({
+    initialImages: initialPlanImages,
+    onChange: (images) => {
+      planImagesRef.current = images;
+      if (!job?.id) return;
+      persistDraftSection(job.id, 'planEdit', buildComposerDraft(planFeedbackTextRef.current, images));
+    },
+  });
+  const followUpImages = useImageAttachment({
+    initialImages: initialFollowUpImages,
+    onChange: (images) => {
+      followUpImagesRef.current = images;
+      if (!job?.id) return;
+      persistDraftSection(job.id, 'followUp', buildComposerDraft(followUpTextRef.current, images));
+    },
+  });
+  const retryImages = useImageAttachment({
+    initialImages: initialRetryImages,
+    onChange: (images) => {
+      retryImagesRef.current = images;
+      if (!job?.id) return;
+      persistDraftSection(job.id, 'retry', buildComposerDraft(retryTextRef.current, images));
+    },
+  });
+
+  const setSelectedOptions: React.Dispatch<React.SetStateAction<Set<string>>> = (value) => {
+    setSelectedOptionsState((prev) => {
+      const next = typeof value === 'function' ? value(prev) : value;
+      if (job?.id) {
+        persistDraftSection(
+          job.id,
+          'pendingQuestion',
+          buildPendingQuestionDraft(
+            questionIdRef.current,
+            currentQuestionStepRef.current,
+            responseTextRef.current,
+            next,
+            questionAnswersRef.current,
+            questionSelectionsRef.current,
+          ),
+        );
+      }
+      return next;
+    });
+  };
+
+  const setQuestionSelections: React.Dispatch<React.SetStateAction<Record<string, Set<string>>>> = (value) => {
+    setQuestionSelectionsState((prev) => {
+      const next = typeof value === 'function' ? value(prev) : value;
+      if (job?.id) {
+        persistDraftSection(
+          job.id,
+          'pendingQuestion',
+          buildPendingQuestionDraft(
+            questionIdRef.current,
+            currentQuestionStepRef.current,
+            responseTextRef.current,
+            selectedOptionsRef.current,
+            questionAnswersRef.current,
+            next,
+          ),
+        );
+      }
+      return next;
+    });
+  };
+
+  const setCurrentQuestionStep: React.Dispatch<React.SetStateAction<number>> = (value) => {
+    setCurrentQuestionStepState((prev) => {
+      const next = typeof value === 'function' ? value(prev) : value;
+      if (job?.id) {
+        persistDraftSection(
+          job.id,
+          'pendingQuestion',
+          buildPendingQuestionDraft(
+            questionIdRef.current,
+            next,
+            responseTextRef.current,
+            selectedOptionsRef.current,
+            questionAnswersRef.current,
+            questionSelectionsRef.current,
+          ),
+        );
+      }
+      return next;
+    });
+  };
+
   // Use persisted editedFiles (survives restart), fall back to live extraction from output log
   const editedFiles = useMemo(() => {
     if (job?.editedFiles && job.editedFiles.length > 0) {
@@ -48,6 +253,124 @@ export function JobDetailPanel() {
   }, [job?.editedFiles, liveEditedFiles]);
   const isActive = job?.status === 'running' || job?.status === 'waiting-input';
   const now = useNow(isActive ? 1000 : 0);
+
+  useEffect(() => {
+    draftVersionRef.current = job?.jobDetailDraftVersion || 0;
+  }, [job?.id, job?.jobDetailDraftVersion]);
+
+  useEffect(() => {
+    responseTextRef.current = responseText;
+  }, [responseText]);
+  useEffect(() => {
+    selectedOptionsRef.current = selectedOptions;
+  }, [selectedOptions]);
+  useEffect(() => {
+    questionAnswersRef.current = questionAnswers;
+  }, [questionAnswers]);
+  useEffect(() => {
+    questionSelectionsRef.current = questionSelections;
+  }, [questionSelections]);
+  useEffect(() => {
+    currentQuestionStepRef.current = currentQuestionStep;
+  }, [currentQuestionStep]);
+  useEffect(() => {
+    questionIdRef.current = questionId;
+  }, [questionId]);
+  useEffect(() => {
+    followUpTextRef.current = followUpText;
+  }, [followUpText]);
+  useEffect(() => {
+    steerTextRef.current = steerText;
+  }, [steerText]);
+  useEffect(() => {
+    planFeedbackTextRef.current = planFeedbackText;
+  }, [planFeedbackText]);
+  useEffect(() => {
+    retryTextRef.current = retryText;
+  }, [retryText]);
+
+  useEffect(() => {
+    const drafts = job?.jobDetailDrafts;
+    steerImagesRef.current = initialSteerImages;
+    planImagesRef.current = initialPlanImages;
+    followUpImagesRef.current = initialFollowUpImages;
+    retryImagesRef.current = initialRetryImages;
+    setFollowUpText(drafts?.followUp?.text || '');
+    setSteerText(drafts?.steer?.text || '');
+    setPlanFeedbackText(drafts?.planEdit?.text || '');
+    setRetryText(drafts?.retry?.text || '');
+
+    const pendingDraft = drafts?.pendingQuestion;
+    if (questionId && pendingDraft?.questionId === questionId) {
+      setCurrentQuestionStepState(pendingDraft.currentStep || 0);
+      setResponseText(pendingDraft.responseText || '');
+      setSelectedOptionsState(new Set(pendingDraft.selectedOptions || []));
+      setQuestionAnswers(pendingDraft.questionAnswers || {});
+      setQuestionSelectionsState(
+        Object.fromEntries(
+          Object.entries(pendingDraft.questionSelections || {}).map(([key, value]) => [key, new Set(value)]),
+        ),
+      );
+    } else {
+      setCurrentQuestionStepState(0);
+      setResponseText('');
+      setSelectedOptionsState(new Set());
+      setQuestionAnswers({});
+      setQuestionSelectionsState({});
+    }
+  }, [job?.id, questionId, initialSteerImages, initialPlanImages, initialFollowUpImages, initialRetryImages]);
+
+  useEffect(() => {
+    if (!job?.id) return;
+    scheduleDraftSection(job.id, 'steer', buildComposerDraft(steerText, steerImages.images));
+  }, [job?.id, steerText]);
+
+  useEffect(() => {
+    if (!job?.id) return;
+    scheduleDraftSection(job.id, 'planEdit', buildComposerDraft(planFeedbackText, planImages.images));
+  }, [job?.id, planFeedbackText]);
+
+  useEffect(() => {
+    if (!job?.id) return;
+    scheduleDraftSection(job.id, 'followUp', buildComposerDraft(followUpText, followUpImages.images));
+  }, [job?.id, followUpText]);
+
+  useEffect(() => {
+    if (!job?.id) return;
+    scheduleDraftSection(job.id, 'retry', buildComposerDraft(retryText, retryImages.images));
+  }, [job?.id, retryText]);
+
+  useEffect(() => {
+    if (!job?.id) return;
+    scheduleDraftSection(
+      job.id,
+      'pendingQuestion',
+      buildPendingQuestionDraft(questionId, currentQuestionStep, responseText, selectedOptions, questionAnswers, questionSelections),
+    );
+  }, [job?.id, questionId, responseText, questionAnswers]);
+
+  useEffect(() => {
+    const currentJobId = job?.id;
+    return () => {
+      if (!currentJobId) return;
+      flushDraftSection(currentJobId, 'steer', buildComposerDraft(steerTextRef.current, steerImagesRef.current));
+      flushDraftSection(currentJobId, 'planEdit', buildComposerDraft(planFeedbackTextRef.current, planImagesRef.current));
+      flushDraftSection(currentJobId, 'followUp', buildComposerDraft(followUpTextRef.current, followUpImagesRef.current));
+      flushDraftSection(currentJobId, 'retry', buildComposerDraft(retryTextRef.current, retryImagesRef.current));
+      flushDraftSection(
+        currentJobId,
+        'pendingQuestion',
+        buildPendingQuestionDraft(
+          questionIdRef.current,
+          currentQuestionStepRef.current,
+          responseTextRef.current,
+          selectedOptionsRef.current,
+          questionAnswersRef.current,
+          questionSelectionsRef.current,
+        ),
+      );
+    };
+  }, [job?.id]);
 
   if (!job) return null;
 
@@ -88,6 +411,7 @@ export function JobDetailPanel() {
     setSelectedOptions(new Set());
     setQuestionAnswers({});
     setQuestionSelections({});
+    setCurrentQuestionStepState(0);
   };
 
   const handleFollowUp = async (images?: JobImage[]) => {
@@ -248,21 +572,6 @@ export function JobDetailPanel() {
                 <path d="M2 4h12M2 8h8M2 12h10" />
               </svg>
             </button>
-
-            {/* Cancel — inline for active jobs */}
-            {isActive && (
-              <button
-                onClick={handleCancel}
-                className="p-1.5 text-semantic-error/70 hover:text-semantic-error hover:bg-semantic-error-bg/10 transition-colors rounded"
-                aria-label="Cancel job"
-                title="Cancel job"
-              >
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                  <circle cx="8" cy="8" r="6" />
-                  <path d="M6 6l4 4M10 6l-4 4" />
-                </svg>
-              </button>
-            )}
 
             {/* Roll Back */}
             {canDelete && hasUncommittedChanges && (
@@ -440,6 +749,8 @@ export function JobDetailPanel() {
         setQuestionAnswers={setQuestionAnswers}
         questionSelections={questionSelections}
         setQuestionSelections={setQuestionSelections}
+        currentQuestionStep={currentQuestionStep}
+        setCurrentQuestionStep={setCurrentQuestionStep}
         followUpText={followUpText}
         setFollowUpText={setFollowUpText}
         steerText={steerText}
@@ -448,6 +759,10 @@ export function JobDetailPanel() {
         setPlanFeedbackText={setPlanFeedbackText}
         retryText={retryText}
         setRetryText={setRetryText}
+        steerImages={steerImages}
+        planImages={planImages}
+        followUpImages={followUpImages}
+        retryImages={retryImages}
         planAction={planAction}
         onRespond={handleRespond}
         onFollowUp={handleFollowUp}
@@ -455,6 +770,7 @@ export function JobDetailPanel() {
         onAcceptPlan={handleAcceptPlan}
         onEditPlan={handleEditPlan}
         onRetry={handleRetry}
+        onCancel={handleCancel}
       />
 
       {/* Phase durations — bottom footer */}
@@ -475,6 +791,8 @@ interface ActionAreaProps {
   setQuestionAnswers: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   questionSelections: Record<string, Set<string>>;
   setQuestionSelections: React.Dispatch<React.SetStateAction<Record<string, Set<string>>>>;
+  currentQuestionStep: number;
+  setCurrentQuestionStep: React.Dispatch<React.SetStateAction<number>>;
   followUpText: string;
   setFollowUpText: (v: string) => void;
   steerText: string;
@@ -483,6 +801,10 @@ interface ActionAreaProps {
   setPlanFeedbackText: (v: string) => void;
   retryText: string;
   setRetryText: (v: string) => void;
+  steerImages: ReturnType<typeof useImageAttachment>;
+  planImages: ReturnType<typeof useImageAttachment>;
+  followUpImages: ReturnType<typeof useImageAttachment>;
+  retryImages: ReturnType<typeof useImageAttachment>;
   planAction: 'accept' | 'edit' | null;
   onRespond: () => void;
   onFollowUp: (images?: JobImage[]) => void;
@@ -490,27 +812,18 @@ interface ActionAreaProps {
   onAcceptPlan: () => void;
   onEditPlan: (images?: JobImage[]) => void;
   onRetry: (images?: JobImage[]) => void;
+  onCancel: () => void;
 }
 
 function ActionArea({
   job, responseText, setResponseText, selectedOptions, setSelectedOptions,
   questionAnswers, setQuestionAnswers, questionSelections, setQuestionSelections,
+  currentQuestionStep, setCurrentQuestionStep,
   followUpText, setFollowUpText, steerText, setSteerText,
   planFeedbackText, setPlanFeedbackText, retryText, setRetryText, planAction,
-  onRespond, onFollowUp, onSteer, onAcceptPlan, onEditPlan, onRetry,
+  steerImages, planImages, followUpImages, retryImages,
+  onRespond, onFollowUp, onSteer, onAcceptPlan, onEditPlan, onRetry, onCancel,
 }: ActionAreaProps) {
-  const [currentQuestionStep, setCurrentQuestionStep] = useState(0);
-  const steerImages = useImageAttachment();
-  const planImages = useImageAttachment();
-  const followUpImages = useImageAttachment();
-  const retryImages = useImageAttachment();
-
-  // Reset step when a new question batch arrives
-  const questionId = job?.pendingQuestion?.questionId;
-  useEffect(() => {
-    setCurrentQuestionStep(0);
-  }, [questionId]);
-
   const submitSteer = () => { onSteer(steerImages.toJobImages()); steerImages.clearImages(); };
   const submitPlanEdit = () => { onEditPlan(planImages.toJobImages()); planImages.clearImages(); };
   const submitFollowUp = () => { onFollowUp(followUpImages.toJobImages()); followUpImages.clearImages(); };
@@ -564,9 +877,18 @@ function ActionArea({
           <div className="flex items-center gap-2">
             <ImageAttachmentBar images={steerImages.images} onRemove={steerImages.removeImage} onAddFiles={steerImages.addFiles} compact />
             <button
+              onClick={onCancel}
+              className="ml-auto shrink-0 flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-semantic-error/30 text-semantic-error hover:bg-semantic-error-bg/10 transition-colors"
+              aria-label="Stop job"
+              title="Stop job"
+            >
+              <StopIcon size={14} />
+              Stop
+            </button>
+            <button
               onClick={submitSteer}
               disabled={!steerText.trim()}
-              className="ml-auto shrink-0 flex items-center justify-center gap-1.5 px-4 py-1.5 text-sm rounded-lg bg-btn-primary text-content-inverted hover:bg-btn-primary-hover disabled:opacity-40 transition-colors"
+              className="shrink-0 flex items-center justify-center gap-1.5 px-4 py-1.5 text-sm rounded-lg bg-btn-primary text-content-inverted hover:bg-btn-primary-hover disabled:opacity-40 transition-colors"
             >
               Steer
             </button>
@@ -712,11 +1034,20 @@ function ActionArea({
                     Back
                   </button>
                 )}
+                <button
+                  onClick={onCancel}
+                  className="ml-auto shrink-0 flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-semantic-error/30 text-semantic-error hover:bg-semantic-error-bg/10 transition-colors"
+                  aria-label="Stop job"
+                  title="Stop job"
+                >
+                  <StopIcon size={14} />
+                  Stop
+                </button>
                 {isLastStep ? (
                   <button
                     onClick={onRespond}
                     disabled={!isCurrentAnswered}
-                    className="ml-auto px-4 py-1.5 text-sm rounded-lg bg-btn-primary text-content-inverted hover:bg-btn-primary-hover disabled:opacity-40 transition-colors"
+                    className="px-4 py-1.5 text-sm rounded-lg bg-btn-primary text-content-inverted hover:bg-btn-primary-hover disabled:opacity-40 transition-colors"
                   >
                     Send
                   </button>
@@ -724,7 +1055,7 @@ function ActionArea({
                   <button
                     onClick={() => setCurrentQuestionStep((s) => s + 1)}
                     disabled={!isCurrentAnswered}
-                    className="ml-auto px-4 py-1.5 text-sm rounded-lg bg-btn-primary text-content-inverted hover:bg-btn-primary-hover disabled:opacity-40 transition-colors"
+                    className="px-4 py-1.5 text-sm rounded-lg bg-btn-primary text-content-inverted hover:bg-btn-primary-hover disabled:opacity-40 transition-colors"
                   >
                     Next
                   </button>
@@ -814,6 +1145,15 @@ function ActionArea({
                 readOnly={!!pq.multiSelect && selectedOptions.size > 0}
                 className="w-full px-3 py-1.5 text-sm rounded-lg border border-chrome bg-surface-elevated focus:outline-none focus:ring-2 focus:ring-focus-ring/40"
               />
+              <button
+                onClick={onCancel}
+                className="shrink-0 flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-semantic-error/30 text-semantic-error hover:bg-semantic-error-bg/10 transition-colors"
+                aria-label="Stop job"
+                title="Stop job"
+              >
+                <StopIcon size={14} />
+                Stop
+              </button>
               <button
                 onClick={onRespond}
                 disabled={pq.multiSelect
@@ -1065,21 +1405,30 @@ function DetailPhaseDurations({ job, now, settings }: { job: Job; now: number; s
     }
   }
 
-  // Model/effort badges
+  // Model/thinking badges
   const effectiveModel = job.model || settings.defaultModel;
-  const effectiveEffort = job.effort || settings.defaultEffort;
-  const showBadges = settings.alwaysShowModelEffort
-    || effectiveModel !== settings.defaultModel
-    || effectiveEffort !== settings.defaultEffort;
+  const effectiveThinkingMode = job.thinkingMode || settings.defaultThinkingMode;
   const availableModels = useKanbanStore((s) => s.availableModels);
   const modelEntry = availableModels.find((o) => o.value === effectiveModel);
-  const effortEntry = EFFORT_CATALOG.find((o) => o.value === effectiveEffort);
-  const modelLabel = modelEntry?.label && effectiveModel !== 'default'
-    ? modelEntry.label
-    : (settings.alwaysShowModelEffort ? 'Default' : '');
-  const effortLabel = effortEntry?.label && effectiveEffort !== settings.defaultEffort
-    ? effortEntry.label
-    : (settings.alwaysShowModelEffort ? 'Default' : '');
+  const defaultModelEntry = availableModels.find((o) => o.value === settings.defaultModel);
+  const effectiveEffort = normalizeEffortForThinking(
+    modelEntry,
+    effectiveThinkingMode,
+    job.effort || settings.defaultEffort,
+  );
+  const defaultEffort = normalizeEffortForThinking(
+    defaultModelEntry,
+    settings.defaultThinkingMode,
+    settings.defaultEffort,
+  );
+  const showBadges = settings.alwaysShowModelEffort
+    || effectiveModel !== settings.defaultModel
+    || effectiveThinkingMode !== settings.defaultThinkingMode
+    || effectiveEffort !== defaultEffort;
+  const modelLabel = modelEntry?.label || (settings.alwaysShowModelEffort ? defaultModelEntry?.label || '' : '');
+  const thinkingDisplay = getThinkingDisplay(modelEntry, effectiveThinkingMode, effectiveEffort);
+  const resolvedThinkingMode = effectiveThinkingMode ?? 'sdkDefault';
+  const showThinking = resolvedThinkingMode !== 'disabled';
 
   if (phases.length === 0 && !showBadges) return null;
 
@@ -1099,25 +1448,24 @@ function DetailPhaseDurations({ job, now, settings }: { job: Job; now: number; s
               · {formatTokenCount(p.tokens.inputTokens)}↓ {formatTokenCount(p.tokens.outputTokens)}↑
             </span>
           )}
-          {p.active && (
-            <span className="relative flex h-1.5 w-1.5">
-              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${p.dotColor} opacity-50`} />
-              <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${p.dotColor}`} />
-            </span>
-          )}
         </div>
       ))}
-      {showBadges && (modelLabel || effortLabel) && (
-        <div className="flex items-center gap-2.5 ml-auto">
+      {showBadges && (modelLabel || showThinking) && (
+        <div className="flex items-center gap-2.5 ml-auto min-w-0">
           {modelLabel && (
-            <span className="text-[10px] font-medium text-content-tertiary uppercase tracking-wider" title={`Model: ${modelLabel}`}>
+            <span className="text-[10px] font-medium text-content-tertiary uppercase tracking-wider truncate" title={`Model: ${modelLabel}`}>
               {modelLabel}
             </span>
           )}
-          {effortLabel && (
-            <span className="flex items-center gap-1 text-content-tertiary" title={`Thinking: ${effortLabel}`}>
+          {showThinking && thinkingDisplay.effortLabel && (
+            <span
+              className="flex items-center gap-1.5 text-content-tertiary min-w-0"
+              title={`Thinking: ${thinkingDisplay.modeLabel}${thinkingDisplay.effortLabel ? ` · ${thinkingDisplay.effortLabel}` : ''}`}
+            >
               <BrainIcon size={11} className="shrink-0 opacity-60" />
-              <span className="text-[10px] font-medium uppercase tracking-wider">{effortLabel}</span>
+              <span className="text-[10px] font-medium uppercase tracking-wider truncate">
+                {thinkingDisplay.effortLabel}
+              </span>
             </span>
           )}
         </div>

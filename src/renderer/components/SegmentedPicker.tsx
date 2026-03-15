@@ -1,6 +1,7 @@
 interface SegmentedPickerOption<T extends string> {
   value: T;
   label: string;
+  description?: string;
 }
 
 interface SegmentedPickerProps<T extends string> {
@@ -20,6 +21,7 @@ export function SegmentedPicker<T extends string>({
         <button
           key={opt.value}
           onClick={() => onChange(opt.value)}
+          title={opt.description}
           className={`px-3.5 py-1 text-[12px] font-medium transition-colors ${
             value === opt.value
               ? 'bg-btn-primary text-content-inverted'

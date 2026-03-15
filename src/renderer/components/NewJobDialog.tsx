@@ -7,8 +7,8 @@ import { Kbd } from './Kbd';
 import { SegmentedPicker } from './SegmentedPicker';
 import { MentionTextarea } from './MentionInput';
 import { ImageAttachmentBar } from './ImageAttachmentBar';
-import { EFFORT_CATALOG, getProjectColor } from '../types/index';
-import type { ModelChoice, EffortLevel } from '../types/index';
+import { getEffortOptionsForThinking, getProjectColor, getThinkingModeOptionsForModel, normalizeEffortForThinking } from '../types/index';
+import type { ModelChoice, EffortLevel, ThinkingMode } from '../types/index';
 
 export function NewJobDialog() {
   const projects = useKanbanStore((s) => s.projects);
@@ -29,13 +29,25 @@ export function NewJobDialog() {
   const [selectedBranch, setSelectedBranch] = useState('');
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [selectedModel, setSelectedModel] = useState<ModelChoice>(settings.defaultModel);
-  const [selectedEffort, setSelectedEffort] = useState<EffortLevel>(settings.defaultEffort);
+  const [selectedThinkingMode, setSelectedThinkingMode] = useState<ThinkingMode>(settings.defaultThinkingMode);
+  const [selectedEffort, setSelectedEffort] = useState<EffortLevel | undefined>(settings.defaultEffort);
+
+  const currentModelOption = availableModels.find((m) => m.value === selectedModel);
+  const thinkingModeOptions = getThinkingModeOptionsForModel(currentModelOption);
+  const effortOptions = getEffortOptionsForThinking(currentModelOption, selectedThinkingMode);
+  const normalizedSelectedEffort = normalizeEffortForThinking(currentModelOption, selectedThinkingMode, selectedEffort);
   const [error, setError] = useState('');
   const dialogRef = useRef<HTMLDivElement>(null);
   const projectSelectRef = useRef<HTMLSelectElement>(null);
   const branchSelectRef = useRef<HTMLSelectElement>(null);
 
   const togglePlan = useCallback(() => setSkipPlanning((v) => !v), []);
+
+  useEffect(() => {
+    if (normalizedSelectedEffort !== selectedEffort) {
+      setSelectedEffort(normalizedSelectedEffort);
+    }
+  }, [normalizedSelectedEffort, selectedEffort]);
 
   useEffect(() => {
     if (!selectedProjectId) {
@@ -68,16 +80,7 @@ export function NewJobDialog() {
     return () => { cancelled = true; };
   }, [selectedProjectId, api, projects]);
 
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.shiftKey && e.key === 'Tab') {
-        e.preventDefault();
-        togglePlan();
-      }
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [togglePlan]);
+  useShortcut('togglePlan', togglePlan, { ref: dialogRef });
 
   const handleSubmit = async () => {
     if (!selectedProjectId || !prompt.trim()) return;
@@ -86,8 +89,19 @@ export function NewJobDialog() {
     try {
       const branchToUse = branches.length > 0 ? selectedBranch : undefined;
       const modelToUse = selectedModel !== settings.defaultModel ? selectedModel : undefined;
-      const effortToUse = selectedEffort !== settings.defaultEffort ? selectedEffort : undefined;
-      const job = await api.jobsCreate(selectedProjectId, prompt.trim(), skipPlanning || undefined, imageAttachment.toJobImages(), branchToUse, modelToUse, effortToUse);
+      const thinkingModeToUse = selectedThinkingMode !== settings.defaultThinkingMode ? selectedThinkingMode : undefined;
+      const fallbackEffort = normalizeEffortForThinking(currentModelOption, selectedThinkingMode, settings.defaultEffort);
+      const effortToUse = normalizedSelectedEffort !== fallbackEffort ? normalizedSelectedEffort : undefined;
+      const job = await api.jobsCreate(
+        selectedProjectId,
+        prompt.trim(),
+        skipPlanning || undefined,
+        imageAttachment.toJobImages(),
+        branchToUse,
+        modelToUse,
+        thinkingModeToUse,
+        effortToUse,
+      );
       addJob(job);
       setShowNewJobDialog(false);
     } catch (err) {
@@ -230,36 +244,36 @@ export function NewJobDialog() {
           />
         </div>
 
-        {/* Image attachments */}
-        <ImageAttachmentBar
-          images={imageAttachment.images}
-          onRemove={imageAttachment.removeImage}
-          onAddFiles={imageAttachment.addFiles}
-        />
+        {/* Image attachments + Plan toggle — single row */}
+        <div className="flex items-center mb-6">
+          <ImageAttachmentBar
+            images={imageAttachment.images}
+            onRemove={imageAttachment.removeImage}
+            onAddFiles={imageAttachment.addFiles}
+            compact
+          />
 
-        {/* Plan toggle */}
-        <div className="flex items-center justify-between mb-6">
-          <button
-            type="button"
-            onClick={togglePlan}
-            className="flex items-center gap-2 group"
-          >
-            <div
-              className={`relative w-8 h-[18px] rounded-full transition-colors ${skipPlanning ? 'bg-chrome/40' : 'bg-btn-primary'
-                }`}
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={togglePlan}
+              className="flex items-center gap-2 group"
             >
               <div
-                className={`absolute top-[2px] h-[14px] w-[14px] rounded-full bg-white shadow transition-transform ${skipPlanning ? 'left-[2px]' : 'translate-x-[14px] left-[2px]'
+                className={`relative w-8 h-[18px] rounded-full transition-colors ${skipPlanning ? 'bg-chrome/40' : 'bg-btn-primary'
                   }`}
-              />
-            </div>
-            <span className="text-xs text-content-secondary group-hover:text-content-primary transition-colors">
-              Plan
-            </span>
-          </button>
-          <span className="text-[10px] text-content-tertiary">
-            shift+tab
-          </span>
+              >
+                <div
+                  className={`absolute top-[2px] h-[14px] w-[14px] rounded-full bg-white shadow transition-transform ${skipPlanning ? 'left-[2px]' : 'translate-x-[14px] left-[2px]'
+                    }`}
+                />
+              </div>
+              <span className="text-xs text-content-secondary group-hover:text-content-primary transition-colors">
+                Plan
+              </span>
+            </button>
+            <Kbd shortcutId="togglePlan" />
+          </div>
         </div>
 
         {/* Model & Thinking */}
@@ -274,15 +288,35 @@ export function NewJobDialog() {
               onChange={(v) => setSelectedModel(v as ModelChoice)}
             />
           </div>
-          <div className="flex items-center justify-between">
-            <label className="text-xs font-medium text-content-secondary uppercase tracking-wider">
-              Thinking
-            </label>
-            <SegmentedPicker
-              options={EFFORT_CATALOG}
-              value={selectedEffort}
-              onChange={(v) => setSelectedEffort(v as EffortLevel)}
-            />
+          <div className="rounded-lg border border-chrome-subtle/50 bg-surface-secondary/70 px-3 py-3 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <label className="text-xs font-medium text-content-secondary uppercase tracking-wider">
+                Thinking
+              </label>
+              <SegmentedPicker
+                options={thinkingModeOptions}
+                value={selectedThinkingMode}
+                onChange={(v) => setSelectedThinkingMode(v as ThinkingMode)}
+              />
+            </div>
+            {effortOptions.length > 0 ? (
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[11px] text-content-tertiary">
+                  Effort
+                </span>
+                <SegmentedPicker
+                  options={effortOptions}
+                  value={normalizedSelectedEffort ?? effortOptions[0]?.value ?? ''}
+                  onChange={(v) => setSelectedEffort(v as EffortLevel)}
+                />
+              </div>
+            ) : (
+              <div className="rounded-md bg-surface-tertiary/40 px-3 py-2 text-[11px] leading-relaxed text-content-tertiary">
+                {selectedThinkingMode === 'disabled'
+                  ? 'Effort is unavailable while thinking is disabled.'
+                  : 'This model does not expose effort levels in the SDK.'}
+              </div>
+            )}
           </div>
         </div>}
 

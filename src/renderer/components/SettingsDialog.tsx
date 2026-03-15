@@ -4,9 +4,10 @@ import { useKanbanStore } from '../hooks/useKanbanStore';
 import { useElectronAPI } from '../hooks/useElectronAPI';
 import { KbdRaw } from './Kbd';
 import { SegmentedPicker } from './SegmentedPicker';
+import { CompactSelect } from './CompactSelect';
 import { CheckForUpdatesButton } from './UpdateButton';
 import type { AppSettings, ShortcutBinding, ThemeMode, PreferredEditor, AccountInfo } from '../types/index';
-import { DEFAULT_SETTINGS, EFFORT_CATALOG, PERMISSION_MODE_CATALOG } from '../types/index';
+import { DEFAULT_SETTINGS, getEffortOptionsForThinking, getThinkingModeOptionsForModel, normalizeEffortForThinking, PERMISSION_MODE_CATALOG } from '../types/index';
 import { XIcon } from './Icons';
 
 const isMac =
@@ -20,8 +21,8 @@ function eventToKeys(e: KeyboardEvent): string | null {
   const hasAlt = e.altKey;
   if (!hasMod && !hasShift && !hasAlt) return null;
 
-  // Ignore bare modifier presses
-  const ignore = new Set(['Meta', 'Control', 'Shift', 'Alt', 'CapsLock', 'Tab']);
+  // Ignore bare modifier presses (Tab is allowed when combined with a modifier)
+  const ignore = new Set(['Meta', 'Control', 'Shift', 'Alt', 'CapsLock']);
   if (ignore.has(e.key)) return null;
 
   const parts: string[] = [];
@@ -46,6 +47,14 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const localRef = useRef(local);
   const saveQueueRef = useRef(Promise.resolve());
+  const defaultModelOption = availableModels.find((m) => m.value === local.defaultModel);
+  const thinkingModeOptions = getThinkingModeOptionsForModel(defaultModelOption);
+  const effortOptions = getEffortOptionsForThinking(defaultModelOption, local.defaultThinkingMode);
+  const normalizedDefaultEffort = normalizeEffortForThinking(
+    defaultModelOption,
+    local.defaultThinkingMode,
+    local.defaultEffort,
+  );
 
   useEffect(() => {
     localRef.current = local;
@@ -82,6 +91,12 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     },
     [persistSettings],
   );
+
+  useEffect(() => {
+    if (normalizedDefaultEffort !== local.defaultEffort) {
+      patchSettings({ defaultEffort: normalizedDefaultEffort });
+    }
+  }, [local.defaultEffort, normalizedDefaultEffort, patchSettings]);
 
   // Fall back to the first installed editor if the current preference is unavailable
   useEffect(() => {
@@ -328,25 +343,49 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 Model for new jobs unless overridden
               </div>
             </div>
-            <SegmentedPicker
+            <CompactSelect
               options={availableModels}
               value={local.defaultModel}
               onChange={(defaultModel) => patchSettings({ defaultModel })}
             />
           </div>
 
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-[13px] text-content-primary">Default Thinking</div>
-              <div className="text-[11px] text-content-tertiary mt-0.5">
-                Thinking level for new jobs unless overridden
+          <div className="rounded-lg border border-chrome-subtle/50 bg-surface-secondary/70 px-3 py-3 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[13px] text-content-primary">Default Thinking</div>
+                <div className="text-[11px] text-content-tertiary mt-0.5">
+                  Populated from the selected model&apos;s SDK capabilities
+                </div>
               </div>
+              <CompactSelect
+                options={thinkingModeOptions}
+                value={local.defaultThinkingMode}
+                onChange={(defaultThinkingMode) => patchSettings({ defaultThinkingMode })}
+              />
             </div>
-            <SegmentedPicker
-              options={EFFORT_CATALOG}
-              value={local.defaultEffort}
-              onChange={(defaultEffort) => patchSettings({ defaultEffort })}
-            />
+
+            {effortOptions.length > 0 ? (
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[12px] text-content-secondary">Effort</div>
+                  <div className="text-[11px] text-content-tertiary mt-0.5">
+                    Guides depth when thinking is enabled
+                  </div>
+                </div>
+                <CompactSelect
+                  options={effortOptions}
+                  value={normalizedDefaultEffort ?? effortOptions[0]?.value ?? ''}
+                  onChange={(defaultEffort) => patchSettings({ defaultEffort })}
+                />
+              </div>
+            ) : (
+              <div className="rounded-md bg-surface-tertiary/40 px-3 py-2 text-[11px] leading-relaxed text-content-tertiary">
+                {local.defaultThinkingMode === 'disabled'
+                  ? 'Effort is unavailable while thinking is disabled.'
+                  : 'This model does not expose effort levels in the SDK.'}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center justify-between">

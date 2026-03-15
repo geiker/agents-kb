@@ -4,7 +4,7 @@ import { EventEmitter } from "events";
 import { v4 as uuidv4 } from "uuid";
 import { query } from "./sdk";
 import type { PermissionResult, CanUseTool } from "@anthropic-ai/claude-agent-sdk";
-import type { OutputEntry, PendingQuestion, QuestionOption, SubQuestion, PermissionMode, Skill, JobImage } from "../shared/types";
+import type { OutputEntry, PendingQuestion, QuestionOption, SubQuestion, PermissionMode, Skill, JobImage, ThinkingMode } from "../shared/types";
 
 export type SessionPhase = "plan" | "dev";
 
@@ -16,6 +16,7 @@ export interface ClaudeSessionOptions {
   sessionId?: string; // for resuming
   images?: JobImage[];
   model?: string;
+  thinkingMode?: ThinkingMode;
   effort?: string;
   permissionMode?: PermissionMode;
   allowedTools?: string[]; // tools explicitly granted by the user (e.g. after permission approval)
@@ -141,7 +142,9 @@ export class ClaudeSession extends EventEmitter {
       sdkOptions.allowedTools = allowedTools;
     }
 
-    if (this.options.effort) {
+    if (this.options.thinkingMode === "disabled") {
+      sdkOptions.thinking = { type: "disabled" };
+    } else if (this.options.effort) {
       sdkOptions.effort = this.options.effort;
     }
 
@@ -169,6 +172,8 @@ export class ClaudeSession extends EventEmitter {
       resume: Boolean(this.options.sessionId),
       permissionMode: effectiveMode,
       sdkPermissionMode,
+      thinkingMode: this.options.thinkingMode ?? "sdkDefault",
+      effort: this.options.thinkingMode === "disabled" ? "(omitted)" : (this.options.effort ?? "(default)"),
       allowedTools: allowedTools.length > 0 ? allowedTools : "(all via canUseTool)",
     });
     console.log("[claude-session] CWD:", this.options.projectPath);

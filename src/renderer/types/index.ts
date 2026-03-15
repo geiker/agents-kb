@@ -1,7 +1,7 @@
-export type { KanbanColumn, JobStatus, Project, OutputEntry, RawMessage, PendingQuestion, SubQuestion, FollowUp, Job, JobImage, JobStepSnapshot, JobFileSnapshot, ShortcutBinding, AppSettings, ThemeMode, ModelChoice, EffortLevel, ModelOption, EffortOption, PromptConfig, PromptId, PreferredEditor, PermissionMode, PermissionModeOption, ProjectColorId, CliHealthStatus, PhaseTokenUsage, Skill, DynamicModelInfo, RewindFilesResult, AccountInfo } from '../../shared/types';
-export { DEFAULT_SETTINGS, DEFAULT_SHORTCUTS, DEFAULT_COMMIT_PROMPT, DEFAULT_PROMPT_CONFIGS, PROMPT_IDS, MODEL_CATALOG, EFFORT_CATALOG, PROJECT_COLORS, getProjectColor, PERMISSION_MODE_CATALOG } from '../../shared/types';
+export type { KanbanColumn, JobStatus, Project, OutputEntry, RawMessage, PendingQuestion, SubQuestion, FollowUp, Job, JobImage, DraftImage, JobComposerDraft, PendingQuestionDraft, JobDetailDrafts, JobStepSnapshot, JobFileSnapshot, ShortcutBinding, AppSettings, ThemeMode, ModelChoice, EffortLevel, ThinkingMode, ModelOption, EffortOption, ThinkingModeOption, PromptConfig, PromptId, PreferredEditor, PermissionMode, PermissionModeOption, ProjectColorId, CliHealthStatus, PhaseTokenUsage, Skill, DynamicModelInfo, RewindFilesResult, AccountInfo } from '../../shared/types';
+export { DEFAULT_SETTINGS, DEFAULT_SHORTCUTS, DEFAULT_COMMIT_PROMPT, DEFAULT_PROMPT_CONFIGS, PROMPT_IDS, EFFORT_LABELS, getEffortOptionsForModel, getEffortOptionsForThinking, getThinkingDisplay, getThinkingModeOptionsForModel, normalizeEffortForThinking, PROJECT_COLORS, getProjectColor, PERMISSION_MODE_CATALOG } from '../../shared/types';
 
-import type { Project, Job, JobImage, OutputEntry, RawMessage, PendingQuestion, AppSettings, ModelChoice, EffortLevel, CliHealthStatus, Skill, AccountInfo, RewindFilesResult, ModelOption } from '../../shared/types';
+import type { Project, Job, JobImage, JobDetailDrafts, OutputEntry, RawMessage, PendingQuestion, AppSettings, ModelChoice, EffortLevel, ThinkingMode, CliHealthStatus, Skill, AccountInfo, RewindFilesResult, ModelOption } from '../../shared/types';
 
 // IPC API exposed via preload
 export interface ElectronAPI {
@@ -40,12 +40,13 @@ export interface ElectronAPI {
 
   // Jobs
   jobsList: () => Promise<Job[]>;
-  jobsCreate: (projectId: string, prompt: string, skipPlanning?: boolean, images?: JobImage[], branch?: string, model?: ModelChoice, effort?: EffortLevel) => Promise<Job>;
+  jobsCreate: (projectId: string, prompt: string, skipPlanning?: boolean, images?: JobImage[], branch?: string, model?: ModelChoice, thinkingMode?: ThinkingMode, effort?: EffortLevel) => Promise<Job>;
   jobsCancel: (jobId: string) => Promise<void>;
   jobsDelete: (jobId: string, options?: { rollback?: boolean }) => Promise<void>;
   jobsRetry: (jobId: string, message?: string, images?: JobImage[]) => Promise<Job>;
   jobsRespond: (jobId: string, answers: Record<string, string>) => Promise<void>;
   jobsSteer: (jobId: string, message: string, images?: JobImage[]) => Promise<void>;
+  jobsUpdateDrafts: (jobId: string, patch: Partial<JobDetailDrafts>, version: number) => Promise<Job | undefined>;
   jobsAcceptPlan: (jobId: string) => Promise<Job>;
   jobsEditPlan: (jobId: string, feedback: string, images?: JobImage[]) => Promise<Job>;
   jobsGetDiff: (jobId: string) => Promise<string | null>;

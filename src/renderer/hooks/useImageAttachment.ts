@@ -1,11 +1,16 @@
-import { useState, useCallback } from 'react';
-import type { JobImage } from '../../shared/types';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import type { DraftImage, JobImage } from '../../shared/types';
 
 /** Renderer-only shape with dataUrl for preview display */
 export interface AttachedImage {
   name: string;
   dataUrl: string;
   base64: string;
+}
+
+interface UseImageAttachmentOptions {
+  initialImages?: AttachedImage[];
+  onChange?: (images: AttachedImage[]) => void;
 }
 
 /** Extract MIME type from a data-URL prefix, falling back to image/png */
@@ -18,12 +23,43 @@ function extractMediaType(dataUrl: string): JobImage['mediaType'] {
   return 'image/png';
 }
 
+export function draftImageToAttachedImage(image: DraftImage): AttachedImage {
+  return {
+    name: image.name,
+    base64: image.base64,
+    dataUrl: `data:${image.mediaType};base64,${image.base64}`,
+  };
+}
+
+export function attachedImageToDraftImage(image: AttachedImage): DraftImage {
+  return {
+    name: image.name,
+    mediaType: extractMediaType(image.dataUrl),
+    base64: image.base64,
+  };
+}
+
 /**
  * Reusable hook for image attachment (paste, drag-drop, file picker).
  * Used by NewJobDialog and all ActionArea inputs in JobDetailPanel.
  */
-export function useImageAttachment() {
-  const [images, setImages] = useState<AttachedImage[]>([]);
+export function useImageAttachment(options: UseImageAttachmentOptions = {}) {
+  const { initialImages = [], onChange } = options;
+  const [images, setImages] = useState<AttachedImage[]>(initialImages);
+  const suppressNextOnChangeRef = useRef(true);
+
+  useEffect(() => {
+    suppressNextOnChangeRef.current = true;
+    setImages(initialImages);
+  }, [initialImages]);
+
+  useEffect(() => {
+    if (suppressNextOnChangeRef.current) {
+      suppressNextOnChangeRef.current = false;
+      return;
+    }
+    onChange?.(images);
+  }, [images, onChange]);
 
   const addImageFromFile = useCallback((file: File) => {
     if (!file.type.startsWith('image/')) return;

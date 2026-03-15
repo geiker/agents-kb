@@ -7,7 +7,7 @@ fixPath();
 
 console.log('[main] Starting Agents-KB...');
 
-import { registerIpcHandlers } from './ipc-handlers';
+import { registerIpcHandlers, initModels } from './ipc-handlers';
 import { sessionManager } from './session-manager';
 import { flushNow, getSettings } from './store';
 import { setupAutoUpdater } from './auto-updater';
@@ -57,6 +57,9 @@ app.whenReady().then(() => {
   nativeTheme.themeSource = settings.theme;
 
   createWindow();
+
+  // Fetch supported models from the SDK at startup
+  void initModels(() => mainWindow);
 
   // Set up auto-updater
   setupAutoUpdater(() => mainWindow);

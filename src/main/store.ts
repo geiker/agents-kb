@@ -1,6 +1,14 @@
 import Store from 'electron-store';
 import type { Project, Job, OutputEntry, RawMessage, AppSettings, PromptConfig } from '../shared/types';
 import { DEFAULT_SETTINGS, DEFAULT_SHORTCUTS, DEFAULT_PROMPT_CONFIGS, DEFAULT_COMMIT_PROMPT } from '../shared/types';
+import {
+  appendOutputRecord,
+  appendRawRecord,
+  deleteJobLogs,
+  flushJobLogsNow,
+  loadJobLogs,
+  replaceJobLogs,
+} from './job-log-store';
 
 interface StoreSchema {
   projects: Project[];
@@ -21,26 +29,24 @@ const store = new Store<StoreSchema>({
 
 // --- In-memory job cache ---
 const jobCache = new Map<string, Job>();
+const outputLogs = new Map<string, OutputEntry[]>();
+const rawMessageLogs = new Map<string, RawMessage[]>();
+
+const MAX_OUTPUT_LOG_ENTRIES = 1000;
+const MAX_RAW_MESSAGE_ENTRIES = 2000;
 
 function normalizePersistedJob(job: PersistedJob): Job {
   if (job.status === 'accepted') {
     const { acceptedAt: _acceptedAt, ...rest } = job;
-    return { ...rest, status: 'completed' };
+    return normalizePersistedJob({ ...rest, status: 'completed' } as Job);
   }
 
-  return job as Job;
+  const normalized = { ...(job as Job) };
+  if (!normalized.thinkingMode && normalized.effort) {
+    normalized.thinkingMode = 'sdkDefault';
+  }
+  return normalized;
 }
-
-// Initialize cache from disk, stripping outputLog/rawMessages (they stay in memory only)
-const normalizedJobs = (store.get('jobs') as PersistedJob[]).map(normalizePersistedJob);
-store.set('jobs', normalizedJobs);
-for (const j of normalizedJobs) {
-  jobCache.set(j.id, { ...j, outputLog: j.outputLog || [], rawMessages: j.rawMessages || [] });
-}
-
-// --- In-memory streaming data (never persisted) ---
-const outputLogs = new Map<string, OutputEntry[]>();
-const rawMessageLogs = new Map<string, RawMessage[]>();
 
 function shouldMergeOutputEntry(last: OutputEntry | undefined, next: OutputEntry): boolean {
   if (!last) return false;
@@ -60,6 +66,73 @@ function shouldMergeOutputEntry(last: OutputEntry | undefined, next: OutputEntry
   return true;
 }
 
+function applyOutputEntry(log: OutputEntry[], entry: OutputEntry): void {
+  const last = log[log.length - 1];
+  if (shouldMergeOutputEntry(last, entry)) {
+    if (entry.toolName && !last.toolName) {
+      last.toolName = entry.toolName;
+    }
+    last.content += entry.content;
+  } else {
+    log.push({ ...entry });
+  }
+}
+
+function trimOutputLog(log: OutputEntry[]): void {
+  if (log.length > MAX_OUTPUT_LOG_ENTRIES) {
+    log.splice(0, log.length - MAX_OUTPUT_LOG_ENTRIES);
+  }
+}
+
+function trimRawMessageLog(messages: RawMessage[]): void {
+  if (messages.length > MAX_RAW_MESSAGE_ENTRIES) {
+    messages.splice(0, messages.length - MAX_RAW_MESSAGE_ENTRIES);
+  }
+}
+
+function rebuildOutputLog(entries: OutputEntry[]): OutputEntry[] {
+  const log: OutputEntry[] = [];
+  for (const entry of entries) {
+    applyOutputEntry(log, entry);
+    trimOutputLog(log);
+  }
+  return log;
+}
+
+function stripStreamingData(job: Job): Job {
+  return {
+    ...job,
+    outputLog: [],
+    rawMessages: [],
+  };
+}
+
+// Initialize cache from disk, hydrating logs from the file-backed log store.
+const normalizedJobs = (store.get('jobs') as PersistedJob[]).map(normalizePersistedJob);
+for (const j of normalizedJobs) {
+  const persistedLogs = loadJobLogs(j.id);
+  const fallbackOutput = j.outputLog || [];
+  const fallbackRawMessages = j.rawMessages || [];
+  const hydratedOutput =
+    persistedLogs.outputEntries.length > 0 ? rebuildOutputLog(persistedLogs.outputEntries) : rebuildOutputLog(fallbackOutput);
+  const hydratedRawMessages =
+    persistedLogs.rawMessages.length > 0 ? [...persistedLogs.rawMessages] : [...fallbackRawMessages];
+
+  trimRawMessageLog(hydratedRawMessages);
+
+  if (
+    (persistedLogs.outputEntries.length === 0 && fallbackOutput.length > 0) ||
+    (persistedLogs.rawMessages.length === 0 && fallbackRawMessages.length > 0)
+  ) {
+    replaceJobLogs(j.id, hydratedOutput, hydratedRawMessages);
+  }
+
+  outputLogs.set(j.id, hydratedOutput);
+  rawMessageLogs.set(j.id, hydratedRawMessages);
+  jobCache.set(j.id, stripStreamingData(j));
+}
+store.set('jobs', normalizedJobs.map(stripStreamingData));
+
 // --- Debounced disk flush ---
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -73,12 +146,7 @@ function scheduleDiskFlush(): void {
 
 function flushToDisk(): void {
   if (process.env.DEMO_MODE === 'true') return;
-  // Strip outputLog and rawMessages from persisted data
-  const jobs = Array.from(jobCache.values()).map(j => ({
-    ...j,
-    outputLog: [],
-    rawMessages: [],
-  }));
+  const jobs = Array.from(jobCache.values()).map(stripStreamingData);
   store.set('jobs', jobs);
 }
 
@@ -88,6 +156,7 @@ export function flushNow(): void {
     flushTimer = null;
   }
   flushToDisk();
+  flushJobLogsNow();
 }
 
 // --- Projects (unchanged — low frequency, fine to hit disk directly) ---
@@ -119,6 +188,7 @@ export function removeProject(id: string): void {
       jobCache.delete(jobId);
       outputLogs.delete(jobId);
       rawMessageLogs.delete(jobId);
+      deleteJobLogs(jobId);
     }
   }
   scheduleDiskFlush();
@@ -178,11 +248,15 @@ export function getJob(id: string): Job | undefined {
 }
 
 export function saveJob(job: Job): void {
-  // Store outputLog/rawMessages in their separate maps
-  outputLogs.set(job.id, job.outputLog || []);
-  rawMessageLogs.set(job.id, job.rawMessages || []);
+  const outputLog = rebuildOutputLog(job.outputLog || []);
+  const rawMessages = [...(job.rawMessages || [])];
+  trimRawMessageLog(rawMessages);
+
+  outputLogs.set(job.id, outputLog);
+  rawMessageLogs.set(job.id, rawMessages);
+  replaceJobLogs(job.id, outputLog, rawMessages);
   // Cache without streaming data
-  jobCache.set(job.id, { ...job, outputLog: [], rawMessages: [] });
+  jobCache.set(job.id, stripStreamingData(job));
   scheduleDiskFlush();
 }
 
@@ -190,6 +264,7 @@ export function deleteJob(id: string): void {
   jobCache.delete(id);
   outputLogs.delete(id);
   rawMessageLogs.delete(id);
+  deleteJobLogs(id);
   scheduleDiskFlush();
 }
 
@@ -198,11 +273,16 @@ export function updateJob(id: string, updates: Partial<Job>): Job | undefined {
   if (!existing) return undefined;
 
   // If updates include outputLog or rawMessages, route to separate maps
-  if (updates.outputLog) {
-    outputLogs.set(id, updates.outputLog);
+  if (updates.outputLog !== undefined) {
+    outputLogs.set(id, rebuildOutputLog(updates.outputLog));
   }
-  if (updates.rawMessages) {
-    rawMessageLogs.set(id, updates.rawMessages);
+  if (updates.rawMessages !== undefined) {
+    const rawMessages = [...updates.rawMessages];
+    trimRawMessageLog(rawMessages);
+    rawMessageLogs.set(id, rawMessages);
+  }
+  if (updates.outputLog !== undefined || updates.rawMessages !== undefined) {
+    replaceJobLogs(id, outputLogs.get(id) || [], rawMessageLogs.get(id) || []);
   }
 
   // Update the cached job (without streaming data)
@@ -219,7 +299,7 @@ export function updateJob(id: string, updates: Partial<Job>): Job | undefined {
   };
 }
 
-// --- Streaming data functions (no disk writes) ---
+// --- Streaming data functions ---
 export function appendOutput(jobId: string, entry: OutputEntry): void {
   let log = outputLogs.get(jobId);
   if (!log) {
@@ -227,17 +307,9 @@ export function appendOutput(jobId: string, entry: OutputEntry): void {
     outputLogs.set(jobId, log);
   }
 
-  const last = log[log.length - 1];
-  if (shouldMergeOutputEntry(last, entry)) {
-    if (entry.toolName && !last.toolName) {
-      last.toolName = entry.toolName;
-    }
-    last.content += entry.content;
-  } else {
-    log.push(entry);
-  }
-
-  if (log.length > 1000) log.splice(0, log.length - 1000);
+  applyOutputEntry(log, entry);
+  trimOutputLog(log);
+  appendOutputRecord(jobId, entry);
 }
 
 export function appendRawMessage(jobId: string, raw: RawMessage): void {
@@ -247,7 +319,8 @@ export function appendRawMessage(jobId: string, raw: RawMessage): void {
     rawMessageLogs.set(jobId, messages);
   }
   messages.push(raw);
-  if (messages.length > 2000) messages.splice(0, messages.length - 2000);
+  trimRawMessageLog(messages);
+  appendRawRecord(jobId, raw);
 }
 
 export function getOutputLog(jobId: string): OutputEntry[] {
@@ -282,6 +355,9 @@ export function getSettings(): AppSettings {
   const stored = store.get('settings');
   if (!stored) return DEFAULT_SETTINGS;
   const merged = { ...DEFAULT_SETTINGS, ...stored };
+  if (!stored.defaultThinkingMode) {
+    merged.defaultThinkingMode = 'sdkDefault';
+  }
   // Ensure newly added default shortcuts appear for existing users
   if (stored.shortcuts) {
     const existingIds = new Set((stored.shortcuts as Array<{ id: string }>).map((s) => s.id));

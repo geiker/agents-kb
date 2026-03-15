@@ -49,3 +49,32 @@ export function query(args: QueryArgs): ReturnType<typeof rawQuery> {
   }
   return rawQuery(args);
 }
+
+/**
+ * Fetch the list of supported models from the SDK without starting a real session.
+ * Spawns a lightweight query, grabs initializationResult (or supportedModels),
+ * and immediately closes it.
+ */
+export async function fetchSupportedModels(): Promise<
+  {
+    value: string;
+    displayName: string;
+    description: string;
+    supportsEffort?: boolean;
+    supportedEffortLevels?: string[];
+    supportsAdaptiveThinking?: boolean;
+  }[]
+> {
+  const q = query({ prompt: "", options: { maxTurns: 0 } });
+  try {
+    const initResult = await q.initializationResult();
+    if (initResult?.models?.length) {
+      return initResult.models;
+    }
+    // Fallback to dedicated method
+    const models = await q.supportedModels();
+    return models ?? [];
+  } finally {
+    q.close();
+  }
+}

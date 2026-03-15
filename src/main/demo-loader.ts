@@ -29,6 +29,7 @@ export function getDemoJobs(): Job[] {
     // Ensure required arrays exist
     if (!job.outputLog) job.outputLog = [];
     if (!job.rawMessages) job.rawMessages = [];
+    if (!job.thinkingMode && job.effort) job.thinkingMode = 'sdkDefault';
 
     return job as unknown as Job;
   });

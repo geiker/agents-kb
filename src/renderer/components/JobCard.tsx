@@ -3,7 +3,7 @@ import { useKanbanStore } from '../hooks/useKanbanStore';
 import { NotificationBadge } from './NotificationBadge';
 import { formatDuration, useNow } from '../utils/duration';
 import type { Job, JobStatus, FollowUp } from '../types/index';
-import { EFFORT_CATALOG, getProjectColor } from '../types/index';
+import { getProjectColor, getThinkingDisplay, normalizeEffortForThinking } from '../types/index';
 import { BrainIcon } from './Icons';
 
 interface JobCardProps {
@@ -210,48 +210,72 @@ function PhaseDurations({ job, now }: { job: Job; now: number }) {
     }
   }
 
-  // Determine model/effort badges
+  // Determine model/thinking badges
   const effectiveModel = job.model || settings.defaultModel;
-  const effectiveEffort = job.effort || settings.defaultEffort;
+  const effectiveThinkingMode = job.thinkingMode || settings.defaultThinkingMode;
+  const modelEntry = availableModels.find((o) => o.value === effectiveModel);
+  const defaultModelEntry = availableModels.find((o) => o.value === settings.defaultModel);
+  const effectiveEffort = normalizeEffortForThinking(
+    modelEntry,
+    effectiveThinkingMode,
+    job.effort || settings.defaultEffort,
+  );
+  const defaultEffort = normalizeEffortForThinking(
+    defaultModelEntry,
+    settings.defaultThinkingMode,
+    settings.defaultEffort,
+  );
   const showBadges = settings.alwaysShowModelEffort
     || effectiveModel !== settings.defaultModel
-    || effectiveEffort !== settings.defaultEffort;
-  const modelLabel = getBadge(availableModels, effectiveModel) || (settings.alwaysShowModelEffort ? 'DEFAULT' : '');
-  const effortLabel = getBadge(EFFORT_CATALOG, effectiveEffort) || (settings.alwaysShowModelEffort ? 'DEFAULT' : '');
+    || effectiveThinkingMode !== settings.defaultThinkingMode
+    || effectiveEffort !== defaultEffort;
+  const modelLabel = modelEntry?.label || (settings.alwaysShowModelEffort ? defaultModelEntry?.label || '' : '');
+  const thinkingDisplay = getThinkingDisplay(modelEntry, effectiveThinkingMode, effectiveEffort);
+  const resolvedThinkingMode = effectiveThinkingMode ?? 'sdkDefault';
+  const showThinking = resolvedThinkingMode !== 'disabled';
 
   if (phases.length === 0 && !showBadges) return null;
 
   return (
-    <div className="flex items-center gap-3 mt-2 pt-1.5 border-t border-chrome-subtle/40">
-      {phases.map((p) => (
-        <div key={p.label} className="flex items-center gap-1.5">
-          <span className="relative flex h-1.5 w-1.5 shrink-0">
-            {p.active && (
-              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${p.dotColor} opacity-50`} />
-            )}
-            <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${p.dotColor}`} />
-          </span>
-          <span className="text-[9px] font-bold tracking-[0.1em] text-content-tertiary uppercase">
-            {p.label}
-          </span>
-          <span className="text-[11px] font-mono font-semibold text-content-secondary tabular-nums leading-none">
-            {p.value}
-          </span>
-        </div>
-      ))}
-      {showBadges && (modelLabel || effortLabel) && (
-        <div className="flex items-center gap-2 ml-auto">
+    <div className="mt-2 pt-1.5 border-t border-chrome-subtle/40 space-y-1.5">
+      {showBadges && (modelLabel || showThinking) && (
+        <div className="flex items-center gap-2 min-w-0">
           {modelLabel && (
-            <span className="text-[9px] font-bold tracking-[0.08em] text-content-tertiary uppercase" title={`Model: ${modelLabel}`}>
+            <span className="text-[9px] font-bold tracking-[0.08em] text-content-tertiary uppercase truncate" title={`Model: ${modelLabel}`}>
               {modelLabel}
             </span>
           )}
-          {effortLabel && (
-            <span className="flex items-center gap-1 text-content-tertiary" title={`Thinking: ${effortLabel}`}>
+          {showThinking && thinkingDisplay.effortLabel && (
+            <span
+              className="flex items-center gap-1.5 text-content-tertiary min-w-0"
+              title={`Thinking: ${thinkingDisplay.modeLabel}${thinkingDisplay.effortLabel ? ` · ${thinkingDisplay.effortLabel}` : ''}`}
+            >
               <BrainIcon size={10} className="shrink-0 opacity-60" />
-              <span className="text-[9px] font-bold tracking-[0.08em] uppercase">{effortLabel}</span>
+              <span className="text-[9px] font-bold tracking-[0.08em] uppercase truncate">
+                {thinkingDisplay.effortLabel}
+              </span>
             </span>
           )}
+        </div>
+      )}
+      {phases.length > 0 && (
+        <div className="flex items-center gap-3">
+          {phases.map((p) => (
+            <div key={p.label} className="flex items-center gap-1.5">
+              <span className="relative flex h-1.5 w-1.5 shrink-0">
+                {p.active && (
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${p.dotColor} opacity-50`} />
+                )}
+                <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${p.dotColor}`} />
+              </span>
+              <span className="text-[9px] font-bold tracking-[0.1em] text-content-tertiary uppercase">
+                {p.label}
+              </span>
+              <span className="text-[11px] font-mono font-semibold text-content-secondary tabular-nums leading-none">
+                {p.value}
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </div>

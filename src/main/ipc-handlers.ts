@@ -1,5 +1,5 @@
 import { app, ipcMain, dialog, BrowserWindow, nativeTheme, shell } from 'electron';
-import { query as sdkQuery } from './sdk';
+import { query as sdkQuery, fetchSupportedModels } from './sdk';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
@@ -29,8 +29,8 @@ import { isDemoMode, getDemoProjects, getDemoJobs, getDemoSettings, getDemoBranc
 import { isGitRepoRoot, listBranches, checkoutBranch, gitStageAll, gitCommit, getBranchesStatus, gitPush } from './git-snapshot';
 import { listSkills } from './skills';
 import { listProjectFiles } from './file-list';
-import type { Job, JobImage, OutputEntry, RawMessage, PendingQuestion, AppSettings, Project, ModelChoice, EffortLevel, PromptConfig, PermissionMode, DynamicModelInfo, ModelOption, Skill, AccountInfo } from '../shared/types';
-import { DEFAULT_PROMPT_CONFIGS, MODEL_CATALOG } from '../shared/types';
+import type { Job, JobImage, JobDetailDrafts, JobComposerDraft, PendingQuestionDraft, OutputEntry, RawMessage, PendingQuestion, AppSettings, Project, ModelChoice, EffortLevel, PromptConfig, PermissionMode, DynamicModelInfo, ModelOption, Skill, AccountInfo, ThinkingMode } from '../shared/types';
+import { DEFAULT_PROMPT_CONFIGS, normalizeEffortForThinking } from '../shared/types';
 import {
   JobStepHistoryTracker,
   buildRollbackTargets,
@@ -106,13 +106,56 @@ const sdkSkillsCache = new Map<string, Skill[]>();
 // --- Account info from SDK ---
 let cachedAccountInfo: AccountInfo | null = null;
 
-/** Convert SDK ModelInfo[] to ModelOption[] for the renderer */
+/** Convert SDK ModelInfo[] to ModelOption[] for the renderer. */
 function buildModelCatalog(models: DynamicModelInfo[]): ModelOption[] {
   return models.map((m) => ({
     value: m.value,
     label: m.displayName,
     badge: m.displayName.toUpperCase(),
+    ...(m.description ? { description: m.description } : {}),
+    ...(m.supportsEffort != null ? { supportsEffort: m.supportsEffort } : {}),
+    ...(m.supportedEffortLevels?.length ? { supportedEffortLevels: m.supportedEffortLevels } : {}),
+    ...(m.supportsAdaptiveThinking != null ? { supportsAdaptiveThinking: m.supportsAdaptiveThinking } : {}),
   }));
+}
+
+function getModelCatalogEntry(model: string): ModelOption | undefined {
+  if (!cachedDynamicModels?.length) return undefined;
+  const found = cachedDynamicModels.find((entry) => entry.value === model);
+  if (!found) return undefined;
+  return buildModelCatalog([found])[0];
+}
+
+function resolveRuntimeThinking(job: Job, settings: AppSettings): {
+  model: ModelChoice;
+  thinkingMode: ThinkingMode;
+  effort?: EffortLevel;
+} {
+  const model = job.model || settings.defaultModel;
+  const thinkingMode = job.thinkingMode || settings.defaultThinkingMode;
+  const effort = normalizeEffortForThinking(
+    getModelCatalogEntry(model),
+    thinkingMode,
+    job.effort || settings.defaultEffort,
+  );
+
+  return { model, thinkingMode, ...(effort ? { effort } : {}) };
+}
+
+/**
+ * Fetch models from the SDK at app startup and populate the cache.
+ * Call this once from main.ts after the window is created.
+ */
+export async function initModels(getWindow: WindowGetter): Promise<void> {
+  try {
+    const models = await fetchSupportedModels();
+    if (models?.length) {
+      cachedDynamicModels = models as DynamicModelInfo[];
+      sendToRenderer(getWindow, 'models:updated', buildModelCatalog(cachedDynamicModels));
+    }
+  } catch (err) {
+    console.warn('[init-models] Failed to fetch models from SDK:', err);
+  }
 }
 
 /** Extract file paths touched by Write/Edit tools from the output log */
@@ -171,6 +214,73 @@ function getStepLabel(order: number): string {
   return order === 0 ? 'Initial development' : `Follow-up #${order}`;
 }
 
+function normalizeComposerDraft(draft?: JobComposerDraft): JobComposerDraft | undefined {
+  if (!draft) return undefined;
+  const text = draft.text || '';
+  const images = draft.images || [];
+  if (!text.trim() && images.length === 0) return undefined;
+  return { text, images };
+}
+
+function normalizePendingQuestionDraft(draft?: PendingQuestionDraft): PendingQuestionDraft | undefined {
+  if (!draft) return undefined;
+
+  const responseText = draft.responseText || '';
+  const selectedOptions = draft.selectedOptions || [];
+  const questionAnswers = Object.fromEntries(
+    Object.entries(draft.questionAnswers || {}).filter(([, value]) => !!value?.trim()),
+  );
+  const questionSelections = Object.fromEntries(
+    Object.entries(draft.questionSelections || {}).filter(([, value]) => Array.isArray(value) && value.length > 0),
+  );
+  const hasContent =
+    !!responseText.trim() ||
+    selectedOptions.length > 0 ||
+    Object.keys(questionAnswers).length > 0 ||
+    Object.keys(questionSelections).length > 0 ||
+    draft.currentStep > 0;
+
+  if (!hasContent) return undefined;
+
+  return {
+    questionId: draft.questionId,
+    currentStep: draft.currentStep,
+    responseText,
+    selectedOptions,
+    questionAnswers,
+    questionSelections,
+  };
+}
+
+function normalizeJobDetailDrafts(drafts?: JobDetailDrafts): JobDetailDrafts | undefined {
+  if (!drafts) return undefined;
+
+  const normalized: JobDetailDrafts = {
+    steer: normalizeComposerDraft(drafts.steer),
+    planEdit: normalizeComposerDraft(drafts.planEdit),
+    followUp: normalizeComposerDraft(drafts.followUp),
+    retry: normalizeComposerDraft(drafts.retry),
+    pendingQuestion: normalizePendingQuestionDraft(drafts.pendingQuestion),
+  };
+
+  return Object.values(normalized).some(Boolean) ? normalized : undefined;
+}
+
+function mergeJobDetailDrafts(existing: JobDetailDrafts | undefined, patch: Partial<JobDetailDrafts>): JobDetailDrafts | undefined {
+  return normalizeJobDetailDrafts({
+    ...(existing || {}),
+    ...patch,
+  });
+}
+
+function nextJobDraftVersion(job: Job, candidate?: number): number {
+  const current = job.jobDetailDraftVersion || 0;
+  if (typeof candidate === 'number') {
+    return Math.max(current + 1, candidate);
+  }
+  return current + 1;
+}
+
 async function startDevelopmentPhase(
   jobId: string,
   getWindow: WindowGetter,
@@ -182,9 +292,7 @@ async function startDevelopmentPhase(
   if (!job) throw new Error('Job not found');
 
   const now = new Date().toISOString();
-
-  const outputLog = getOutputLog(jobId);
-  outputLog.push({
+  appendOutput(jobId, {
     timestamp: now,
     type: 'system',
     content: '--- Planning complete. Starting development phase ---',
@@ -198,7 +306,6 @@ async function startDevelopmentPhase(
     waitingStartedAt: undefined,
     planningEndedAt: updates.planningEndedAt || now,
     developmentStartedAt: updates.developmentStartedAt || now,
-    outputLog,
   });
 
   if (updated) {
@@ -224,8 +331,7 @@ async function markPlanReady(
 
   const now = new Date().toISOString();
   const project = getProjects().find(p => p.id === job.projectId);
-  const outputLog = getOutputLog(jobId);
-  outputLog.push({
+  appendOutput(jobId, {
     timestamp: now,
     type: 'system',
     content: '--- Planning complete. Waiting for plan approval ---',
@@ -236,7 +342,6 @@ async function markPlanReady(
     status: 'plan-ready',
     pendingQuestion: undefined,
     waitingStartedAt: now,
-    outputLog,
   });
 
   if (updated) {
@@ -377,10 +482,9 @@ async function startClaudeSession(
     prompt = job.prompt;
   }
 
-  // Resolve effective model and effort: job overrides > settings defaults
+  // Resolve effective model/thinking settings: job overrides > settings defaults
   const settings = getSettings();
-  const effectiveModel = job.model || settings.defaultModel;
-  const effectiveEffort = job.effort || settings.defaultEffort;
+  const effectiveThinking = resolveRuntimeThinking(job, settings);
 
   // Pull transient image data from cache (if any), then clear to free memory
   const images = pendingImages.get(job.id);
@@ -393,8 +497,9 @@ async function startClaudeSession(
     phase,
     sessionId,
     images,
-    model: effectiveModel,
-    effort: effectiveEffort,
+    model: effectiveThinking.model,
+    thinkingMode: effectiveThinking.thinkingMode,
+    effort: effectiveThinking.effort,
     permissionMode: settings.permissionMode,
   });
 
@@ -447,10 +552,17 @@ async function startClaudeSession(
   });
 
   session.on('needs-input', (question: PendingQuestion) => {
+    const current = getJob(job.id);
+    const shouldPreservePendingDraft = current?.jobDetailDrafts?.pendingQuestion?.questionId === question.questionId;
+    const jobDetailDrafts = shouldPreservePendingDraft
+      ? current.jobDetailDrafts
+      : mergeJobDetailDrafts(current?.jobDetailDrafts, { pendingQuestion: undefined });
     const updated = updateJob(job.id, {
       status: 'waiting-input',
       pendingQuestion: question,
       waitingStartedAt: new Date().toISOString(),
+      jobDetailDrafts,
+      ...(current ? { jobDetailDraftVersion: shouldPreservePendingDraft ? current.jobDetailDraftVersion : nextJobDraftVersion(current) } : {}),
     });
     if (updated) {
       sendToRenderer(getWindow, 'job:status-changed', updated);
@@ -1265,7 +1377,28 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     return getJobs();
   });
 
-  ipcMain.handle('jobs:create', async (_event, projectId: string, prompt: string, skipPlanning?: boolean, images?: JobImage[], branch?: string, model?: ModelChoice, effort?: EffortLevel) => {
+  ipcMain.handle('jobs:update-drafts', (_event, jobId: string, patch: Partial<JobDetailDrafts>, version: number) => {
+    const job = getJob(jobId);
+    if (!job) return undefined;
+    const currentVersion = job.jobDetailDraftVersion || 0;
+
+    if (version < currentVersion) {
+      return job;
+    }
+
+    const updated = updateJob(jobId, {
+      jobDetailDrafts: mergeJobDetailDrafts(job.jobDetailDrafts, patch),
+      jobDetailDraftVersion: version,
+    });
+
+    if (updated) {
+      sendToRenderer(getWindow, 'job:status-changed', updated);
+    }
+
+    return updated;
+  });
+
+  ipcMain.handle('jobs:create', async (_event, projectId: string, prompt: string, skipPlanning?: boolean, images?: JobImage[], branch?: string, model?: ModelChoice, thinkingMode?: ThinkingMode, effort?: EffortLevel) => {
     const now = new Date().toISOString();
 
     // Strip base64 data for persistence — keep only metadata
@@ -1286,6 +1419,7 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
       ...(persistImages ? { images: persistImages } : {}),
       ...(branch ? { branch } : {}),
       ...(model ? { model } : {}),
+      ...(thinkingMode ? { thinkingMode } : {}),
       ...(effort ? { effort } : {}),
       outputLog: [],
       rawMessages: [],
@@ -1356,8 +1490,7 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     const isCancelled = job.error === 'Cancelled by user';
     const verb = isCancelled ? 'Resuming' : 'Retrying';
 
-    const outputLog = getOutputLog(jobId);
-    outputLog.push({
+    appendOutput(jobId, {
       timestamp: new Date().toISOString(),
       type: 'system',
       content: message
@@ -1389,7 +1522,8 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
       completedAt: undefined,
       diffText: undefined,
       ...elapsedUpdate,
-      outputLog,
+      jobDetailDrafts: mergeJobDetailDrafts(job.jobDetailDrafts, { retry: undefined }),
+      jobDetailDraftVersion: nextJobDraftVersion(job),
     });
 
     if (updated) {
@@ -1431,13 +1565,12 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
       const isAllowed = firstValue.toLowerCase().includes('allow');
       const deniedTools = current.pendingQuestion.deniedTools || [];
       if (isAllowed) {
-        const outputLog = getOutputLog(jobId);
-        outputLog.push({
+        appendOutput(jobId, {
           timestamp: new Date().toISOString(),
           type: 'system',
           content: `Permission granted for ${deniedTools.join(', ')}`,
         });
-        updateJob(jobId, { outputLog });
+        updateJob(jobId, {});
       }
     }
 
@@ -1448,6 +1581,8 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
       pendingQuestion: undefined,
       waitingStartedAt: undefined,
       totalPausedMs,
+      jobDetailDrafts: mergeJobDetailDrafts(current.jobDetailDrafts, { pendingQuestion: undefined }),
+      jobDetailDraftVersion: nextJobDraftVersion(current),
     });
     if (updated) {
       sendToRenderer(getWindow, 'job:status-changed', updated);
@@ -1461,14 +1596,16 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     const session = sessionManager.get(jobId);
     if (!session) throw new Error('No active session for this job');
 
-    const outputLog = getOutputLog(jobId);
-    outputLog.push({
+    appendOutput(jobId, {
       timestamp: new Date().toISOString(),
       type: 'system',
       content: `--- Steer: ${message} ---`,
     });
 
-    const updated = updateJob(jobId, { outputLog });
+    const updated = updateJob(jobId, {
+      jobDetailDrafts: mergeJobDetailDrafts(job.jobDetailDrafts, { steer: undefined }),
+      jobDetailDraftVersion: nextJobDraftVersion(job),
+    });
     if (updated) {
       sendToRenderer(getWindow, 'job:status-changed', updated);
     }
@@ -1506,6 +1643,8 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
       planningPausedMs: totalPausedMs,
       waitingStartedAt: undefined,
       totalPausedMs,
+      jobDetailDrafts: mergeJobDetailDrafts(job.jobDetailDrafts, { planEdit: undefined }),
+      jobDetailDraftVersion: nextJobDraftVersion(job),
     });
 
     if (!updated) {
@@ -1524,8 +1663,7 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
 
     sessionManager.kill(jobId);
 
-    const outputLog = getOutputLog(jobId);
-    outputLog.push({
+    appendOutput(jobId, {
       timestamp: new Date().toISOString(),
       type: 'system',
       content: `--- Editing plan: ${feedback} ---`,
@@ -1543,7 +1681,8 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
       pendingQuestion: undefined,
       waitingStartedAt: undefined,
       totalPausedMs,
-      outputLog,
+      jobDetailDrafts: mergeJobDetailDrafts(job.jobDetailDrafts, { planEdit: undefined }),
+      jobDetailDraftVersion: nextJobDraftVersion(job),
     });
 
     if (updated) {
@@ -1582,8 +1721,7 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     const followUps = [...(job.followUps || []), { prompt, timestamp: now }];
     const project = getProjects().find(p => p.id === job.projectId);
 
-    const outputLog = getOutputLog(jobId);
-    outputLog.push({
+    appendOutput(jobId, {
       timestamp: now,
       type: 'system',
       content: `--- Follow-up #${followUps.length}: ${prompt} ---`,
@@ -1609,7 +1747,8 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
       error: undefined,
       diffText: undefined,
       followUps,
-      outputLog,
+      jobDetailDrafts: mergeJobDetailDrafts(job.jobDetailDrafts, { followUp: undefined }),
+      jobDetailDraftVersion: nextJobDraftVersion(job),
     });
 
     if (updated) {
@@ -1797,7 +1936,7 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
     if (cachedDynamicModels) {
       return buildModelCatalog(cachedDynamicModels);
     }
-    return MODEL_CATALOG;
+    return [];
   });
 
   // === Skills ===

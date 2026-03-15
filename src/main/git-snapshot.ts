@@ -2,8 +2,15 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import { createHash } from 'crypto';
-import type { GitSnapshot } from '../shared/types';
 import type { FileState } from './job-step-history';
+
+export interface GitSnapshot {
+  commitSha: string;
+  hadDirtyTree: boolean;
+  tempCommitSha?: string;
+  refName: string;
+  label: string;
+}
 
 const execFileAsync = promisify(execFile);
 

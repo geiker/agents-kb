@@ -22,12 +22,13 @@ const api: ElectronAPI = {
 
   // Jobs
   jobsList: () => ipcRenderer.invoke('jobs:list'),
-  jobsCreate: (projectId, prompt, skipPlanning, images, branch, model, effort) => ipcRenderer.invoke('jobs:create', projectId, prompt, skipPlanning, images, branch, model, effort),
+  jobsCreate: (projectId, prompt, skipPlanning, images, branch, model, thinkingMode, effort) => ipcRenderer.invoke('jobs:create', projectId, prompt, skipPlanning, images, branch, model, thinkingMode, effort),
   jobsCancel: (jobId) => ipcRenderer.invoke('jobs:cancel', jobId),
   jobsDelete: (jobId, options) => ipcRenderer.invoke('jobs:delete', jobId, options),
   jobsRetry: (jobId, message, images) => ipcRenderer.invoke('jobs:retry', jobId, message, images),
   jobsRespond: (jobId, response) => ipcRenderer.invoke('jobs:respond', jobId, response),
   jobsSteer: (jobId, message, images) => ipcRenderer.invoke('jobs:steer', jobId, message, images),
+  jobsUpdateDrafts: (jobId, patch, version) => ipcRenderer.invoke('jobs:update-drafts', jobId, patch, version),
   jobsAcceptPlan: (jobId) => ipcRenderer.invoke('jobs:accept-plan', jobId),
   jobsEditPlan: (jobId, feedback, images) => ipcRenderer.invoke('jobs:edit-plan', jobId, feedback, images),
   jobsGetDiff: (jobId) => ipcRenderer.invoke('jobs:get-diff', jobId),

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Project, Job, OutputEntry, RawMessage, PendingQuestion, AppSettings, CliHealthStatus, ModelOption } from '../types/index';
-import { DEFAULT_SETTINGS, MODEL_CATALOG } from '../types/index';
+import { DEFAULT_SETTINGS } from '../types/index';
 
 interface KanbanState {
   cliHealth: CliHealthStatus | null;
@@ -14,7 +14,7 @@ interface KanbanState {
   showSkillsPanel: boolean;
   promptHistoryJobId: string | null;
   settings: AppSettings;
-  /** Dynamic model catalog from the SDK (updated after first session starts) */
+  /** Model catalog fetched from the SDK at app startup */
   availableModels: ModelOption[];
   /** Installed editors detected once at startup */
   installedEditors: Record<string, boolean> | null;
@@ -69,7 +69,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   showSkillsPanel: false,
   promptHistoryJobId: null,
   settings: DEFAULT_SETTINGS,
-  availableModels: MODEL_CATALOG,
+  availableModels: [],
   installedEditors: null,
   outputLogs: {},
   rawMessages: {},
@@ -194,17 +194,17 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
     get().setJobs(jobs);
     set({ projects, settings });
 
-    // Fetch dynamic model catalog (uses cached SDK data if available)
+    // Fetch model catalog from SDK (cached in main process)
     api.modelsList().then((models) => {
       if (models?.length) get().setAvailableModels(models);
-    }).catch(() => { /* fallback to hardcoded catalog */ });
+    }).catch(() => { /* models will arrive via onModelsUpdated when ready */ });
 
     // Detect installed editors once at startup (cached for the session)
     api.editorsDetectInstalled().then((editors) => {
       if (editors) set({ installedEditors: editors });
     }).catch(() => { /* editor detection failed, leave as null */ });
 
-    // Listen for dynamic model updates from the SDK (pushed after first session starts)
+    // Listen for model updates from the SDK (pushed at startup or when sessions discover new models)
     api.onModelsUpdated((models) => {
       if (models?.length) get().setAvailableModels(models);
     });

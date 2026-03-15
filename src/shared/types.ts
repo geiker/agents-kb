@@ -20,6 +20,7 @@ export interface AccountInfo {
 /* ─── Settings ─── */
 
 export type ThemeMode = "system" | "light" | "dark";
+export type ThinkingMode = "sdkDefault" | "disabled";
 
 /* ─── Model & Effort catalog (single source of truth) ─── */
 // Uses CLI aliases so --model always resolves to the latest version.
@@ -32,6 +33,14 @@ export interface ModelOption {
   label: string;
   /** Short badge text for cards */
   badge: string;
+  /** Optional description from the SDK */
+  description?: string;
+  /** Whether this model supports effort/thinking levels */
+  supportsEffort?: boolean;
+  /** Available effort levels for this model (from SDK) */
+  supportedEffortLevels?: string[];
+  /** Whether this model supports adaptive thinking */
+  supportsAdaptiveThinking?: boolean;
 }
 
 export interface EffortOption {
@@ -43,12 +52,12 @@ export interface EffortOption {
   badge: string;
 }
 
-/** Hardcoded fallback — used until dynamic models are fetched from the SDK */
-export const MODEL_CATALOG: ModelOption[] = [
-  { value: "opus", label: "Opus", badge: "OPUS" },
-  { value: "sonnet", label: "Sonnet", badge: "SONNET" },
-  { value: "haiku", label: "Haiku", badge: "HAIKU" },
-];
+export interface ThinkingModeOption {
+  value: ThinkingMode;
+  label: string;
+  badge: string;
+  description: string;
+}
 
 /** Model info fetched dynamically from the Agent SDK */
 export interface DynamicModelInfo {
@@ -57,17 +66,96 @@ export interface DynamicModelInfo {
   description: string;
   supportsEffort?: boolean;
   supportedEffortLevels?: string[];
+  supportsAdaptiveThinking?: boolean;
 }
 
-export const EFFORT_CATALOG: EffortOption[] = [
-  { value: "low", label: "Low", badge: "LOW" },
-  { value: "medium", label: "Medium", badge: "MED" },
-  { value: "high", label: "High", badge: "HIGH" },
-  { value: "max", label: "Max", badge: "MAX" },
-];
+/** Label/badge lookup for effort levels — display only, available levels come from the model */
+export const EFFORT_LABELS: Record<string, EffortOption> = {
+  low: { value: "low", label: "Low", badge: "LOW" },
+  medium: { value: "medium", label: "Medium", badge: "MED" },
+  high: { value: "high", label: "High", badge: "HIGH" },
+  max: { value: "max", label: "Max", badge: "MAX" },
+};
 
-export type ModelChoice = (typeof MODEL_CATALOG)[number]["value"];
-export type EffortLevel = (typeof EFFORT_CATALOG)[number]["value"];
+/** Build an EffortOption[] from the model's supportedEffortLevels */
+export function getEffortOptionsForModel(model: ModelOption | undefined): EffortOption[] {
+  if (!model?.supportsEffort || !model.supportedEffortLevels?.length) return [];
+  return model.supportedEffortLevels
+    .map((level) => EFFORT_LABELS[level])
+    .filter(Boolean);
+}
+
+export function getThinkingModeOptionsForModel(model: ModelOption | undefined): ThinkingModeOption[] {
+  const adaptive = Boolean(model?.supportsAdaptiveThinking);
+  return [
+    {
+      value: "sdkDefault",
+      label: adaptive ? "Adaptive" : "Default",
+      badge: adaptive ? "ADAPT" : "DEFAULT",
+      description: adaptive
+        ? "Claude decides when and how much to think"
+        : "Use the model's default thinking behavior",
+    },
+    {
+      value: "disabled",
+      label: "Disabled",
+      badge: "OFF",
+      description: "No extended thinking",
+    },
+  ];
+}
+
+export function getEffortOptionsForThinking(
+  model: ModelOption | undefined,
+  thinkingMode: ThinkingMode | undefined,
+): EffortOption[] {
+  if (thinkingMode === "disabled") return [];
+  return getEffortOptionsForModel(model);
+}
+
+export function normalizeEffortForThinking(
+  model: ModelOption | undefined,
+  thinkingMode: ThinkingMode | undefined,
+  effort: EffortLevel | undefined,
+): EffortLevel | undefined {
+  if (thinkingMode === "disabled") return undefined;
+  const options = getEffortOptionsForModel(model);
+  if (options.length === 0) {
+    return model ? undefined : effort;
+  }
+  if (effort && options.some((option) => option.value === effort)) {
+    return effort;
+  }
+  return options[0]?.value;
+}
+
+export function getThinkingDisplay(
+  model: ModelOption | undefined,
+  thinkingMode: ThinkingMode | undefined,
+  effort: EffortLevel | undefined,
+): {
+  modeLabel: string;
+  modeBadge: string;
+  effortLabel?: string;
+  effortBadge?: string;
+} {
+  const resolvedMode = thinkingMode ?? "sdkDefault";
+  const modeOption = getThinkingModeOptionsForModel(model).find((option) => option.value === resolvedMode)
+    ?? getThinkingModeOptionsForModel(model)[0];
+  const normalizedEffort = normalizeEffortForThinking(model, resolvedMode, effort);
+  const effortOption = normalizedEffort ? EFFORT_LABELS[normalizedEffort] : undefined;
+
+  return {
+    modeLabel: modeOption.label,
+    modeBadge: modeOption.badge,
+    ...(effortOption
+      ? { effortLabel: effortOption.label, effortBadge: effortOption.badge }
+      : {}),
+  };
+}
+
+export type ModelChoice = string;
+export type EffortLevel = string;
 
 /* ─── Prompt Configs ─── */
 
@@ -143,7 +231,8 @@ export interface AppSettings {
   commitPrompt?: string;
   promptConfigs: Record<string, PromptConfig>;
   defaultModel: ModelChoice;
-  defaultEffort: EffortLevel;
+  defaultThinkingMode: ThinkingMode;
+  defaultEffort?: EffortLevel;
   alwaysShowModelEffort: boolean;
   showTokenUsage: boolean;
   showModelEffortInNewJob: boolean;
@@ -159,6 +248,7 @@ export const DEFAULT_SHORTCUTS: ShortcutBinding[] = [
   { id: "openSettings", label: "Settings", keys: "mod+s", enabled: true },
   { id: "focusProject", label: "Focus Project (New Job)", keys: "mod+p", enabled: true },
   { id: "focusBranch", label: "Focus Branch (New Job)", keys: "mod+b", enabled: true },
+  { id: "togglePlan", label: "Toggle Plan (New Job)", keys: "shift+tab", enabled: true },
 ];
 
 export const DEFAULT_COMMIT_PROMPT =
@@ -182,6 +272,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   shortcuts: [...DEFAULT_SHORTCUTS],
   promptConfigs: { ...DEFAULT_PROMPT_CONFIGS },
   defaultModel: "opus",
+  defaultThinkingMode: "sdkDefault",
   defaultEffort: "medium",
   alwaysShowModelEffort: false,
   showTokenUsage: false,
@@ -330,6 +421,34 @@ export interface FollowUp {
   rolledBack?: boolean;
 }
 
+export interface DraftImage {
+  name: string;
+  mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+  base64: string;
+}
+
+export interface JobComposerDraft {
+  text: string;
+  images: DraftImage[];
+}
+
+export interface PendingQuestionDraft {
+  questionId: string;
+  currentStep: number;
+  responseText: string;
+  selectedOptions: string[];
+  questionAnswers: Record<string, string>;
+  questionSelections: Record<string, string[]>;
+}
+
+export interface JobDetailDrafts {
+  steer?: JobComposerDraft;
+  planEdit?: JobComposerDraft;
+  followUp?: JobComposerDraft;
+  retry?: JobComposerDraft;
+  pendingQuestion?: PendingQuestionDraft;
+}
+
 /** Image attachment metadata. base64 is transient (not persisted to electron-store). */
 export interface JobImage {
   name: string;
@@ -375,5 +494,8 @@ export interface Job {
   committedSha?: string;
   editedFiles?: string[];
   model?: ModelChoice;
+  thinkingMode?: ThinkingMode;
   effort?: EffortLevel;
+  jobDetailDrafts?: JobDetailDrafts;
+  jobDetailDraftVersion?: number;
 }
