@@ -1,4 +1,4 @@
-import { useEffect, useRef, useMemo, useState } from 'react';
+import { useEffect, useRef, useMemo, useState, memo } from 'react';
 import type { OutputSection } from '../hooks/useJobOutput';
 import { PlanMarkdown } from './PlanMarkdown';
 
@@ -142,9 +142,64 @@ function shortenPath(p: string): string {
   return '.../' + parts.slice(-3).join('/');
 }
 
-function ToolSection({ section }: { section: OutputSection }) {
+/** Shared section list renderer — used for both top-level and nested sub-agent rendering */
+const SectionList = memo(function SectionList({ sections }: { sections: OutputSection[] }) {
+  return (
+    <>
+      {sections.map((section) => {
+        const key = `${section.kind}-${section.id}`;
+        if (section.kind === 'plan') {
+          return <div key={key} className="streaming-section"><PlanSection content={section.content} /></div>;
+        }
+        if (section.kind === 'tool') {
+          return <div key={key} className="streaming-section"><ToolSection section={section} /></div>;
+        }
+        if (section.kind === 'thinking') {
+          return <div key={key} className="streaming-section"><ThinkingSection content={section.content} /></div>;
+        }
+        if (section.kind === 'error') {
+          return (
+            <div key={key} className="streaming-section text-semantic-error-light whitespace-pre-wrap break-words my-1 px-2 py-1 rounded bg-semantic-error-bg-dark/20">
+              {section.content}
+            </div>
+          );
+        }
+        if (section.kind === 'rate-limit') {
+          return (
+            <div key={key} className="streaming-section flex items-center gap-1.5 text-semantic-warning whitespace-pre-wrap break-words my-1 px-2 py-1 rounded bg-semantic-warning/10 border border-semantic-warning/20 text-[11px]">
+              <span className="shrink-0">&#9888;</span>
+              {section.content}
+            </div>
+          );
+        }
+        if (section.kind === 'progress') {
+          return (
+            <div key={key} className="streaming-section text-terminal-text-muted/50 whitespace-pre-wrap break-words my-0.5 text-[10px] italic">
+              {section.content}
+            </div>
+          );
+        }
+        if (section.kind === 'system') {
+          return (
+            <div key={key} className="streaming-section text-terminal-text-muted/60 whitespace-pre-wrap break-words my-0.5 text-[10px]">
+              {section.content}
+            </div>
+          );
+        }
+        return (
+          <div key={key} className="streaming-section text-terminal-text whitespace-pre-wrap break-words my-2 leading-relaxed">
+            {section.content}
+          </div>
+        );
+      })}
+    </>
+  );
+});
+
+const ToolSection = memo(function ToolSection({ section }: { section: OutputSection }) {
   const [expanded, setExpanded] = useState(false);
   const [resultExpanded, setResultExpanded] = useState(false);
+  const [childrenExpanded, setChildrenExpanded] = useState(true);
 
   const { parsed, summary, inferredToolName } = useMemo(() => parseToolInput(section.content), [section.content]);
   const params = useMemo(() => parsed ? formatToolParams(parsed) : null, [parsed]);
@@ -160,6 +215,9 @@ function ToolSection({ section }: { section: OutputSection }) {
   const displaySummary = summary ? shortenPath(summary) : '';
   const toolLabel = section.toolName || inferredToolName || 'Tool';
   const showInput = expanded || !!section.isStreaming;
+  const isAgent = toolLabel === 'Agent' || toolLabel === 'Task';
+  const hasChildren = section.children && section.children.length > 0;
+  const isActive = section.isStreaming || section.hasStreamingChild;
 
   return (
     <div className="my-1 rounded border border-terminal-border overflow-hidden">
@@ -175,7 +233,7 @@ function ToolSection({ section }: { section: OutputSection }) {
         {displaySummary && (
           <span className="text-terminal-text-muted text-[10px] truncate font-mono">{displaySummary}</span>
         )}
-        {section.isStreaming && (
+        {isActive && (
           <span
             className="ml-auto h-2 w-2 shrink-0 rounded-full border border-tool-label/40 border-t-tool-label animate-spin"
             aria-label={`${toolLabel} is running`}
@@ -207,6 +265,32 @@ function ToolSection({ section }: { section: OutputSection }) {
         </div>
       )}
 
+      {/* Sub-agent nested tool calls */}
+      {isAgent && hasChildren && (
+        <div className="border-t border-terminal-border/60">
+          <button
+            onClick={() => setChildrenExpanded(!childrenExpanded)}
+            className="w-full flex items-center gap-2 px-2 py-1 text-left hover:bg-terminal-hover/30 transition-colors"
+          >
+            <span className="text-terminal-text-muted text-[10px] shrink-0">{childrenExpanded ? '▼' : '▶'}</span>
+            <span className="text-terminal-text-muted text-[10px] font-medium shrink-0">
+              sub-agent ({section.children!.length} {section.children!.length === 1 ? 'step' : 'steps'})
+            </span>
+            {section.hasStreamingChild && (
+              <span
+                className="ml-auto h-2 w-2 shrink-0 rounded-full border border-tool-label/40 border-t-tool-label animate-spin"
+                aria-label="Sub-agent is running"
+              />
+            )}
+          </button>
+          {childrenExpanded && (
+            <div className="pl-3 border-l-2 border-tool-icon/20 ml-2 py-1">
+              <SectionList sections={section.children!} />
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Tool result */}
       {hasResult && (
         <div className="border-t border-terminal-border/60">
@@ -229,9 +313,15 @@ function ToolSection({ section }: { section: OutputSection }) {
       )}
     </div>
   );
-}
+}, (prev, next) => (
+  prev.section.content === next.section.content &&
+  prev.section.toolResult === next.section.toolResult &&
+  prev.section.isStreaming === next.section.isStreaming &&
+  prev.section.children === next.section.children &&
+  prev.section.hasStreamingChild === next.section.hasStreamingChild
+));
 
-function ThinkingSection({ content }: { content: string }) {
+const ThinkingSection = memo(function ThinkingSection({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(false);
   const preview = content.slice(0, 150).replace(/\n/g, ' ');
 
@@ -248,27 +338,38 @@ function ThinkingSection({ content }: { content: string }) {
       </button>
     </div>
   );
-}
+});
 
-function PlanSection({ content }: { content: string }) {
+const PlanSection = memo(function PlanSection({ content }: { content: string }) {
   return (
     <div className="my-2 rounded-lg border border-semantic-success-border/30 bg-semantic-success-bg/10 p-3 text-xs leading-relaxed">
       <div className="text-semantic-success text-[10px] font-semibold uppercase tracking-wider mb-2">Plan</div>
       <PlanMarkdown content={content} />
     </div>
   );
-}
+});
 
 const VISIBLE_SECTIONS = 100;
 
-export function StreamingLog({ sections, entryCount }: StreamingLogProps) {
-  const endRef = useRef<HTMLDivElement>(null);
+export const StreamingLog = memo(function StreamingLog({ sections, entryCount }: StreamingLogProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [showAll, setShowAll] = useState(false);
   const isNearBottomRef = useRef(true);
+  const rafRef = useRef<number>(0);
 
   const hiddenCount = showAll ? 0 : Math.max(0, sections.length - VISIBLE_SECTIONS);
   const visibleSections = showAll ? sections : sections.slice(hiddenCount);
+
+  // Scroll to bottom on mount (panel just opened).
+  // Use rAF so the browser has finished layout and scrollHeight is accurate.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const id = requestAnimationFrame(() => {
+      container.scrollTop = container.scrollHeight;
+    });
+    return () => cancelAnimationFrame(id);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const container = containerRef.current;
@@ -281,14 +382,30 @@ export function StreamingLog({ sections, entryCount }: StreamingLogProps) {
     return () => container.removeEventListener('scroll', handleScroll);
   }, []);
 
+  // RAF-throttled auto-scroll: pin to bottom when user is already there,
+  // disengage when they scroll up. Re-check inside the RAF callback to
+  // avoid overriding a scroll-away that happened between effect and paint.
   useEffect(() => {
-    if (isNearBottomRef.current) {
-      endRef.current?.scrollIntoView({ behavior: 'auto' });
-    }
+    if (!isNearBottomRef.current) return;
+    if (rafRef.current) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0;
+      if (!isNearBottomRef.current) return;
+      const container = containerRef.current;
+      if (container) {
+        container.scrollTop = container.scrollHeight;
+      }
+    });
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = 0;
+      }
+    };
   }, [entryCount]);
 
   return (
-    <div ref={containerRef} className="flex-1 overflow-y-auto min-h-0 bg-surface-terminal rounded-lg p-3 font-mono text-xs leading-relaxed">
+    <div ref={containerRef} className="streaming-log-container flex-1 overflow-y-auto min-h-0 bg-surface-terminal rounded-lg p-3 font-mono text-xs leading-relaxed">
       {entryCount === 0 && (
         <div className="text-terminal-text-faint text-center py-8">
           Waiting for output...
@@ -302,53 +419,7 @@ export function StreamingLog({ sections, entryCount }: StreamingLogProps) {
           Show {hiddenCount} earlier section{hiddenCount !== 1 ? 's' : ''}
         </button>
       )}
-      {visibleSections.map((section, i) => {
-        const key = `${section.kind}-${section.timestamp}-${hiddenCount + i}`;
-        if (section.kind === 'plan') {
-          return <PlanSection key={key} content={section.content} />;
-        }
-        if (section.kind === 'tool') {
-          return <ToolSection key={key} section={section} />;
-        }
-        if (section.kind === 'thinking') {
-          return <ThinkingSection key={key} content={section.content} />;
-        }
-        if (section.kind === 'error') {
-          return (
-            <div key={key} className="text-semantic-error-light whitespace-pre-wrap break-words my-1 px-2 py-1 rounded bg-semantic-error-bg-dark/20">
-              {section.content}
-            </div>
-          );
-        }
-        if (section.kind === 'rate-limit') {
-          return (
-            <div key={key} className="flex items-center gap-1.5 text-semantic-warning whitespace-pre-wrap break-words my-1 px-2 py-1 rounded bg-semantic-warning/10 border border-semantic-warning/20 text-[11px]">
-              <span className="shrink-0">&#9888;</span>
-              {section.content}
-            </div>
-          );
-        }
-        if (section.kind === 'progress') {
-          return (
-            <div key={key} className="text-terminal-text-muted/50 whitespace-pre-wrap break-words my-0.5 text-[10px] italic">
-              {section.content}
-            </div>
-          );
-        }
-        if (section.kind === 'system') {
-          return (
-            <div key={key} className="text-terminal-text-muted/60 whitespace-pre-wrap break-words my-0.5 text-[10px]">
-              {section.content}
-            </div>
-          );
-        }
-        return (
-          <div key={key} className="text-terminal-text whitespace-pre-wrap break-words my-2 leading-relaxed">
-            {section.content}
-          </div>
-        );
-      })}
-      <div ref={endRef} />
+      <SectionList sections={visibleSections} />
     </div>
   );
-}
+}, (prev, next) => prev.entryCount === next.entryCount && prev.sections === next.sections);

@@ -39,14 +39,18 @@ export function attachedImageToDraftImage(image: AttachedImage): DraftImage {
   };
 }
 
+const EMPTY_IMAGES: AttachedImage[] = [];
+
 /**
  * Reusable hook for image attachment (paste, drag-drop, file picker).
  * Used by NewJobDialog and all ActionArea inputs in JobDetailPanel.
  */
 export function useImageAttachment(options: UseImageAttachmentOptions = {}) {
-  const { initialImages = [], onChange } = options;
+  const { initialImages = EMPTY_IMAGES, onChange } = options;
   const [images, setImages] = useState<AttachedImage[]>(initialImages);
   const suppressNextOnChangeRef = useRef(true);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
 
   useEffect(() => {
     suppressNextOnChangeRef.current = true;
@@ -58,8 +62,8 @@ export function useImageAttachment(options: UseImageAttachmentOptions = {}) {
       suppressNextOnChangeRef.current = false;
       return;
     }
-    onChange?.(images);
-  }, [images, onChange]);
+    onChangeRef.current?.(images);
+  }, [images]);
 
   const addImageFromFile = useCallback((file: File) => {
     if (!file.type.startsWith('image/')) return;

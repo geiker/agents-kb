@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { Skill } from '../types';
+import type { Skill } from '../../types';
 
 interface SlashCommandDropdownProps {
   matches: Skill[];

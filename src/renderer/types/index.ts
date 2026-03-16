@@ -106,6 +106,7 @@ export interface ElectronAPI {
   onJobStatusChanged: (callback: (job: Job) => void) => () => void;
   onJobOutputBatch: (callback: (data: { jobId: string; entries: OutputEntry[] }) => void) => () => void;
   onJobRawMessageBatch: (callback: (data: { jobId: string; messages: RawMessage[] }) => void) => () => void;
+  onJobStreamingBatch: (callback: (data: { jobId: string; entries: OutputEntry[]; messages: RawMessage[] }) => void) => () => void;
   onJobNeedsInput: (callback: (data: { jobId: string; question: PendingQuestion }) => void) => () => void;
   onJobError: (callback: (data: { jobId: string; error: string }) => void) => () => void;
   onJobComplete: (callback: (data: { jobId: string }) => void) => () => void;

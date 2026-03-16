@@ -6,7 +6,7 @@ import { ProjectManager } from './components/ProjectManager';
 import { JobDetailPanel } from './components/JobDetailPanel';
 import { NewJobDialog } from './components/NewJobDialog';
 import { SettingsDialog } from './components/SettingsDialog';
-import { SkillsPanel } from './components/SkillsPanel';
+import { SkillsPanel } from './features/skills';
 import { PromptHistoryDialog } from './components/PromptHistoryDialog';
 import { SetupScreen } from './components/SetupScreen';
 import { SplashScreen } from './components/SplashScreen';

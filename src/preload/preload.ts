@@ -151,6 +151,11 @@ const api: ElectronAPI = {
     ipcRenderer.on('job:raw-message-batch', handler);
     return () => ipcRenderer.removeListener('job:raw-message-batch', handler);
   },
+  onJobStreamingBatch: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: Parameters<typeof callback>[0]) => callback(data);
+    ipcRenderer.on('job:streaming-batch', handler);
+    return () => ipcRenderer.removeListener('job:streaming-batch', handler);
+  },
   onJobNeedsInput: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, data: Parameters<typeof callback>[0]) => callback(data);
     ipcRenderer.on('job:needs-input', handler);

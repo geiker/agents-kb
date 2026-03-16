@@ -37,16 +37,26 @@ function getPackagedCliPath(): string | undefined {
 }
 
 type QueryArgs = Parameters<typeof rawQuery>[0];
+type QueryOptions = NonNullable<QueryArgs["options"]>;
+
+function withPackagedCliPath<T extends Record<string, unknown>>(options: T): T {
+  const cliPath = getPackagedCliPath();
+  if (!cliPath || options.pathToClaudeCodeExecutable) {
+    return options;
+  }
+  return { ...options, pathToClaudeCodeExecutable: cliPath };
+}
+
+export function withProjectScopedClaudeCodeOptions<T extends Record<string, unknown>>(options: T): T {
+  return withPackagedCliPath({
+    ...options,
+    systemPrompt: options.systemPrompt ?? { type: "preset", preset: "claude_code" },
+  });
+}
 
 export function query(args: QueryArgs): ReturnType<typeof rawQuery> {
-  const cliPath = getPackagedCliPath();
-  if (cliPath) {
-    const opts = { ...(args.options ?? {}) };
-    if (!opts.pathToClaudeCodeExecutable) {
-      opts.pathToClaudeCodeExecutable = cliPath;
-    }
-    args = { ...args, options: opts };
-  }
+  const opts = withPackagedCliPath({ ...((args.options ?? {}) as QueryOptions) });
+  args = { ...args, options: opts };
   return rawQuery(args);
 }
 

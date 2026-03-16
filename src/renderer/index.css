@@ -181,7 +181,7 @@
 
   /* Custom scrollbar */
   ::-webkit-scrollbar {
-    @apply w-1.5;
+    @apply w-1.5 h-1.5;
   }
   ::-webkit-scrollbar-track {
     @apply bg-transparent;
@@ -195,6 +195,14 @@
   ::selection {
     background-color: rgb(var(--color-selection) / 0.2);
   }
+}
+
+/* Isolate the streaming log from the rest of the page layout.
+   Avoid `size` containment — it breaks scrollHeight computation.
+   VISIBLE_SECTIONS cap already limits the DOM, so content-visibility
+   on .streaming-section is unnecessary. */
+.streaming-log-container {
+  contain: layout paint style;
 }
 
 @keyframes splashIn {

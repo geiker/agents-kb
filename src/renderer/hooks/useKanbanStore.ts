@@ -38,6 +38,7 @@ interface KanbanState {
   removeJob: (id: string) => void;
   appendOutputBatch: (jobId: string, entries: OutputEntry[]) => void;
   appendRawMessageBatch: (jobId: string, messages: RawMessage[]) => void;
+  appendStreamingBatch: (jobId: string, entries: OutputEntry[], messages: RawMessage[]) => void;
   setJobQuestion: (jobId: string, question: PendingQuestion) => void;
 
   selectJob: (id: string | null) => void;
@@ -123,15 +124,15 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
     return { jobs: [...s.jobs, job], outputLogs, rawMessages };
   }),
   updateJob: (job) => set((s) => {
-    const outputLogs = { ...s.outputLogs };
-    const rawMessages = { ...s.rawMessages };
-    if (job.outputLog?.length) outputLogs[job.id] = job.outputLog;
-    if (job.rawMessages?.length) rawMessages[job.id] = job.rawMessages;
-    return {
-      jobs: s.jobs.map(j => j.id === job.id ? job : j),
-      outputLogs,
-      rawMessages,
-    };
+    const newJobs = s.jobs.map(j => j.id === job.id ? job : j);
+    const result: Partial<KanbanState> = { jobs: newJobs };
+    if (job.outputLog?.length) {
+      result.outputLogs = { ...s.outputLogs, [job.id]: job.outputLog };
+    }
+    if (job.rawMessages?.length) {
+      result.rawMessages = { ...s.rawMessages, [job.id]: job.rawMessages };
+    }
+    return result;
   }),
   removeJob: (id) => set((s) => {
     const { [id]: _ol, ...outputLogs } = s.outputLogs;
@@ -154,6 +155,18 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
     return {
       rawMessages: { ...s.rawMessages, [jobId]: [...existing, ...messages] },
     };
+  }),
+  appendStreamingBatch: (jobId, entries, messages) => set((s) => {
+    const result: Partial<KanbanState> = {};
+    if (entries.length > 0) {
+      const existingOutput = s.outputLogs[jobId] || [];
+      result.outputLogs = { ...s.outputLogs, [jobId]: [...existingOutput, ...entries] };
+    }
+    if (messages.length > 0) {
+      const existingRaw = s.rawMessages[jobId] || [];
+      result.rawMessages = { ...s.rawMessages, [jobId]: [...existingRaw, ...messages] };
+    }
+    return result;
   }),
   setJobQuestion: (jobId, question) => set((s) => ({
     jobs: s.jobs.map(j =>
@@ -214,12 +227,8 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
       get().updateJob(job);
     });
 
-    api.onJobOutputBatch(({ jobId, entries }) => {
-      get().appendOutputBatch(jobId, entries);
-    });
-
-    api.onJobRawMessageBatch(({ jobId, messages }) => {
-      get().appendRawMessageBatch(jobId, messages);
+    api.onJobStreamingBatch(({ jobId, entries, messages }) => {
+      get().appendStreamingBatch(jobId, entries, messages);
     });
 
     api.onJobNeedsInput(({ jobId, question }) => {

@@ -16,7 +16,7 @@ interface BranchStatus {
   dirtyFiles: number;
 }
 
-const BRANCH_STATUS_POLL_MS = 30000;
+const BRANCH_STATUS_POLL_MS = 15000;
 const TERMINAL_JOB_STATUSES = new Set<string>(['completed', 'rejected', 'error']);
 
 function areBranchStatusListsEqual(left: BranchStatus[] | undefined, right: BranchStatus[] | undefined): boolean {

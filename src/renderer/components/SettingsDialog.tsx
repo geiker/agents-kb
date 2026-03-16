@@ -410,6 +410,16 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
           <div className="flex items-center justify-between">
             <div>
+              <div className="text-[13px] text-content-primary">Show context usage</div>
+              <div className="text-[11px] text-content-tertiary mt-0.5">
+                Display context window fill bar in job details
+              </div>
+            </div>
+            <Toggle checked={local.showContextUsage} onChange={() => patchSettings((current) => ({ ...current, showContextUsage: !current.showContextUsage }))} />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
               <div className="text-[13px] text-content-primary">Show model/thinking in New Job</div>
               <div className="text-[11px] text-content-tertiary mt-0.5">
                 Display model and thinking pickers when creating a job

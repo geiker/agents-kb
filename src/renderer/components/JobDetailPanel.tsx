@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useEffect } from 'react';
+import { useState, useRef, useMemo, useEffect, useCallback, memo } from 'react';
 import { useKanbanStore } from '../hooks/useKanbanStore';
 import { useJobOutput, useJobOutputAnalysis } from '../hooks/useJobOutput';
 import { useElectronAPI } from '../hooks/useElectronAPI';
@@ -13,7 +13,24 @@ import { formatDuration, useNow } from '../utils/duration';
 import type { Job, JobImage, JobComposerDraft, PendingQuestionDraft, JobDetailDrafts, FollowUp, AppSettings, PhaseTokenUsage, SubQuestion } from '../types/index';
 import { getProjectColor, getThinkingDisplay, normalizeEffortForThinking } from '../types/index';
 import { BrainIcon, BranchIcon, StopIcon, TrashIcon, XIcon } from './Icons';
+import { CopyButton } from './CopyButton';
 import { PlanMarkdown } from './PlanMarkdown';
+
+/* ─── Streaming isolation containers (Step 1) ─── */
+
+const StreamingLogContainer = memo(function StreamingLogContainer({ jobId }: { jobId: string }) {
+  const outputLog = useJobOutput(jobId);
+  const { sections } = useJobOutputAnalysis(jobId, outputLog);
+  return <StreamingLog sections={sections} entryCount={outputLog.length} />;
+});
+
+const LiveEditedFilesContainer = memo(function LiveEditedFilesContainer({
+  jobId, projectId
+}: { jobId: string; projectId: string }) {
+  const outputLog = useJobOutput(jobId);
+  const { editedFiles } = useJobOutputAnalysis(jobId, outputLog);
+  return <EditedFilesList files={editedFiles} projectId={projectId} />;
+});
 
 type DraftSectionKey = keyof JobDetailDrafts;
 
@@ -70,7 +87,8 @@ function draftImagesToAttachedImages(draft?: JobComposerDraft): ReturnType<typeo
 export function JobDetailPanel() {
   const selectedJobId = useKanbanStore((s) => s.selectedJobId);
   const job = useKanbanStore((s) => s.jobs.find((j) => j.id === selectedJobId));
-  const project = useKanbanStore((s) => job ? s.projects.find((p) => p.id === job.projectId) : undefined);
+  const projectId = job?.projectId;
+  const project = useKanbanStore((s) => projectId ? s.projects.find((p) => p.id === projectId) : undefined);
   const selectJob = useKanbanStore((s) => s.selectJob);
   const removeJob = useKanbanStore((s) => s.removeJob);
   const settings = useKanbanStore((s) => s.settings);
@@ -92,8 +110,6 @@ export function JobDetailPanel() {
   const draftTimeoutsRef = useRef<Partial<Record<DraftSectionKey, ReturnType<typeof setTimeout>>>>({});
 
   const questionId = job?.pendingQuestion?.questionId;
-  const outputLog = useJobOutput(selectedJobId || '');
-  const { sections: outputSections, editedFiles: liveEditedFiles } = useJobOutputAnalysis(selectedJobId || '', outputLog);
   const initialSteerImages = useMemo(() => draftImagesToAttachedImages(job?.jobDetailDrafts?.steer), [job?.id]);
   const initialPlanImages = useMemo(() => draftImagesToAttachedImages(job?.jobDetailDrafts?.planEdit), [job?.id]);
   const initialFollowUpImages = useMemo(() => draftImagesToAttachedImages(job?.jobDetailDrafts?.followUp), [job?.id]);
@@ -181,12 +197,18 @@ export function JobDetailPanel() {
     },
   });
 
-  const setSelectedOptions: React.Dispatch<React.SetStateAction<Set<string>>> = (value) => {
+  const persistDraftSectionRef = useRef(persistDraftSection);
+  persistDraftSectionRef.current = persistDraftSection;
+  const selectedJobIdRef = useRef(selectedJobId);
+  selectedJobIdRef.current = selectedJobId;
+
+  const setSelectedOptions: React.Dispatch<React.SetStateAction<Set<string>>> = useCallback((value) => {
     setSelectedOptionsState((prev) => {
       const next = typeof value === 'function' ? value(prev) : value;
-      if (job?.id) {
-        persistDraftSection(
-          job.id,
+      const jobId = selectedJobIdRef.current;
+      if (jobId) {
+        persistDraftSectionRef.current(
+          jobId,
           'pendingQuestion',
           buildPendingQuestionDraft(
             questionIdRef.current,
@@ -200,14 +222,15 @@ export function JobDetailPanel() {
       }
       return next;
     });
-  };
+  }, []);
 
-  const setQuestionSelections: React.Dispatch<React.SetStateAction<Record<string, Set<string>>>> = (value) => {
+  const setQuestionSelections: React.Dispatch<React.SetStateAction<Record<string, Set<string>>>> = useCallback((value) => {
     setQuestionSelectionsState((prev) => {
       const next = typeof value === 'function' ? value(prev) : value;
-      if (job?.id) {
-        persistDraftSection(
-          job.id,
+      const jobId = selectedJobIdRef.current;
+      if (jobId) {
+        persistDraftSectionRef.current(
+          jobId,
           'pendingQuestion',
           buildPendingQuestionDraft(
             questionIdRef.current,
@@ -221,14 +244,15 @@ export function JobDetailPanel() {
       }
       return next;
     });
-  };
+  }, []);
 
-  const setCurrentQuestionStep: React.Dispatch<React.SetStateAction<number>> = (value) => {
+  const setCurrentQuestionStep: React.Dispatch<React.SetStateAction<number>> = useCallback((value) => {
     setCurrentQuestionStepState((prev) => {
       const next = typeof value === 'function' ? value(prev) : value;
-      if (job?.id) {
-        persistDraftSection(
-          job.id,
+      const jobId = selectedJobIdRef.current;
+      if (jobId) {
+        persistDraftSectionRef.current(
+          jobId,
           'pendingQuestion',
           buildPendingQuestionDraft(
             questionIdRef.current,
@@ -242,17 +266,16 @@ export function JobDetailPanel() {
       }
       return next;
     });
-  };
+  }, []);
 
-  // Use persisted editedFiles (survives restart), fall back to live extraction from output log
-  const editedFiles = useMemo(() => {
+  // Persisted editedFiles (survives restart) — used in done-state views
+  const persistedEditedFiles = useMemo(() => {
     if (job?.editedFiles && job.editedFiles.length > 0) {
       return job.editedFiles.map((p) => ({ path: p, tool: 'Edit' }));
     }
-    return liveEditedFiles;
-  }, [job?.editedFiles, liveEditedFiles]);
+    return null;
+  }, [job?.editedFiles]);
   const isActive = job?.status === 'running' || job?.status === 'waiting-input';
-  const now = useNow(isActive ? 1000 : 0);
 
   useEffect(() => {
     draftVersionRef.current = job?.jobDetailDraftVersion || 0;
@@ -372,66 +395,65 @@ export function JobDetailPanel() {
     };
   }, [job?.id]);
 
-  if (!job) return null;
-
-  const projectColor = getProjectColor(project?.color);
-
-  const handleRespond = async () => {
-    const pq = job?.pendingQuestion;
-    if (!pq) return;
+  const handleRespond = useCallback(async () => {
+    const store = useKanbanStore.getState();
+    const currentJob = store.jobs.find((j) => j.id === selectedJobIdRef.current);
+    const pq = currentJob?.pendingQuestion;
+    if (!pq || !selectedJobIdRef.current) return;
 
     const answers: Record<string, string> = {};
 
     if (pq.subQuestions && pq.subQuestions.length > 0) {
-      // Multi-question mode: build answers from per-question state
+      const qSel = questionSelectionsRef.current;
+      const qAns = questionAnswersRef.current;
       for (const sq of pq.subQuestions) {
-        const sel = questionSelections[sq.question];
+        const sel = qSel[sq.question];
         if (sel && sel.size > 0) {
           answers[sq.question] = Array.from(sel).join(', ');
-        } else if (questionAnswers[sq.question]?.trim()) {
-          answers[sq.question] = questionAnswers[sq.question].trim();
+        } else if (qAns[sq.question]?.trim()) {
+          answers[sq.question] = qAns[sq.question].trim();
         }
       }
-      // Require all questions answered
       if (Object.keys(answers).length < pq.subQuestions.length) return;
     } else {
-      // Single-question mode (backward compat)
       const isMulti = pq.multiSelect;
-      const text = isMulti && selectedOptions.size > 0
-        ? Array.from(selectedOptions).join(', ')
-        : responseText.trim();
+      const text = isMulti && selectedOptionsRef.current.size > 0
+        ? Array.from(selectedOptionsRef.current).join(', ')
+        : responseTextRef.current.trim();
       if (!text) return;
       answers[pq.text] = text;
     }
 
-    await api.jobsRespond(job.id, answers);
+    await api.jobsRespond(selectedJobIdRef.current, answers);
     setResponseText('');
     setSelectedOptions(new Set());
     setQuestionAnswers({});
     setQuestionSelections({});
     setCurrentQuestionStepState(0);
-  };
+  }, [api, setSelectedOptions, setQuestionSelections]);
 
-  const handleFollowUp = async (images?: JobImage[]) => {
-    if (!followUpText.trim()) return;
-    const updated = await api.jobsFollowUp(job.id, followUpText.trim(), images);
+  const handleFollowUp = useCallback(async (images?: JobImage[]) => {
+    const text = followUpTextRef.current.trim();
+    if (!text || !selectedJobIdRef.current) return;
+    const updated = await api.jobsFollowUp(selectedJobIdRef.current, text, images);
     if (updated) {
       useKanbanStore.getState().updateJob(updated);
     }
     setFollowUpText('');
-  };
+  }, [api]);
 
-  const handleSteer = async (images?: JobImage[]) => {
-    if (!steerText.trim()) return;
-    await api.jobsSteer(job.id, steerText.trim(), images);
+  const handleSteer = useCallback(async (images?: JobImage[]) => {
+    const text = steerTextRef.current.trim();
+    if (!text || !selectedJobIdRef.current) return;
+    await api.jobsSteer(selectedJobIdRef.current, text, images);
     setSteerText('');
-  };
+  }, [api]);
 
-  const handleAcceptPlan = async () => {
-    if (planAction) return;
+  const handleAcceptPlan = useCallback(async () => {
+    if (!selectedJobIdRef.current) return;
     setPlanAction('accept');
     try {
-      const updated = await api.jobsAcceptPlan(job.id);
+      const updated = await api.jobsAcceptPlan(selectedJobIdRef.current);
       if (updated) {
         useKanbanStore.getState().updateJob(updated);
       }
@@ -442,14 +464,14 @@ export function JobDetailPanel() {
     } finally {
       setPlanAction(null);
     }
-  };
+  }, [api]);
 
-  const handleEditPlan = async (images?: JobImage[]) => {
-    const feedback = planFeedbackText.trim();
-    if (!feedback || planAction) return;
+  const handleEditPlan = useCallback(async (images?: JobImage[]) => {
+    const feedback = planFeedbackTextRef.current.trim();
+    if (!feedback || !selectedJobIdRef.current) return;
     setPlanAction('edit');
     try {
-      const updated = await api.jobsEditPlan(job.id, feedback, images);
+      const updated = await api.jobsEditPlan(selectedJobIdRef.current, feedback, images);
       if (updated) {
         useKanbanStore.getState().updateJob(updated);
       }
@@ -460,10 +482,10 @@ export function JobDetailPanel() {
     } finally {
       setPlanAction(null);
     }
-  };
+  }, [api]);
 
-  const handleRejectJob = async (rewindIndex?: number) => {
-    const uuids = job.userMessageUuids || [];
+  const handleRejectJob = useCallback(async (rewindIndex?: number) => {
+    if (!selectedJobIdRef.current) return;
     const targetIndex = rewindIndex ?? 0;
     const label = targetIndex === 0
       ? 'original state'
@@ -473,25 +495,24 @@ export function JobDetailPanel() {
     );
     if (!confirmed) return;
     try {
-      await api.jobsRejectJob(job.id, targetIndex);
+      await api.jobsRejectJob(selectedJobIdRef.current, targetIndex);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to reject job';
       window.alert(message);
     }
-  };
+  }, [api]);
 
-  const handleCancel = async () => {
-    await api.jobsCancel(job.id);
-  };
+  const handleCancel = useCallback(async () => {
+    if (!selectedJobIdRef.current) return;
+    await api.jobsCancel(selectedJobIdRef.current);
+  }, [api]);
 
-  const hasUncommittedChanges =
-    (job.userMessageUuids?.length ?? 0) > 0 && !job.committedSha && job.status !== 'rejected' && editedFiles.length > 0;
-
-  const handleDelete = async () => {
+  const handleDelete = useCallback(async () => {
+    if (!selectedJobIdRef.current) return;
     setDeleteLoading(true);
     try {
-      await api.jobsDelete(job.id);
-      removeJob(job.id);
+      await api.jobsDelete(selectedJobIdRef.current);
+      removeJob(selectedJobIdRef.current);
       setConfirmDelete(false);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to delete job';
@@ -499,24 +520,32 @@ export function JobDetailPanel() {
     } finally {
       setDeleteLoading(false);
     }
-  };
+  }, [api, removeJob]);
 
-  const handleRetry = async (images?: JobImage[]) => {
-    const msg = retryText.trim();
-    const updated = await api.jobsRetry(job.id, msg || undefined, images);
+  const handleRetry = useCallback(async (images?: JobImage[]) => {
+    if (!selectedJobIdRef.current) return;
+    const msg = retryTextRef.current.trim();
+    const updated = await api.jobsRetry(selectedJobIdRef.current, msg || undefined, images);
     if (updated) {
       useKanbanStore.getState().updateJob(updated);
       setRetryText('');
     }
-  };
+  }, [api]);
 
-  const handleOpenProject = async () => {
+  const handleOpenProject = useCallback(async () => {
     if (!project) return;
-    const result = await api.projectsOpenInEditor(project.id, job.branch);
+    const result = await api.projectsOpenInEditor(project.id, job?.branch);
     if (!result.success) {
       window.alert(result.error || 'Failed to open project in editor.');
     }
-  };
+  }, [api, project, job?.branch]);
+
+  if (!job) return null;
+
+  const projectColor = getProjectColor(project?.color);
+
+  const hasUncommittedChanges =
+    (job.userMessageUuids?.length ?? 0) > 0 && !job.committedSha && job.status !== 'rejected' && (job.editedFiles?.length ?? 0) > 0;
 
   const isDone = job.status === 'completed' || job.status === 'rejected';
   const isPlanReady = job.status === 'plan-ready';
@@ -673,9 +702,13 @@ export function JobDetailPanel() {
 
           {/* Tab content */}
           {doneTab === 'summary' && hasSummary && (
-            <div className="flex-1 min-h-0 overflow-y-auto p-3">
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 relative">
+              <CopyButton text={job.summaryText!} className="absolute top-3 right-3 z-10" />
               <PlanView content={job.summaryText!} />
-              <EditedFilesList files={editedFiles} projectId={job.projectId} />
+              {persistedEditedFiles
+                ? <EditedFilesList files={persistedEditedFiles} projectId={job.projectId} />
+                : <LiveEditedFilesContainer jobId={job.id} projectId={job.projectId} />
+              }
             </div>
           )}
           {doneTab === 'diff' && hasDiff && (
@@ -685,7 +718,7 @@ export function JobDetailPanel() {
           )}
           {doneTab === 'log' && (
             <div className="flex-1 min-h-0 p-3 flex flex-col">
-              <StreamingLog sections={outputSections} entryCount={outputLog.length} />
+              <StreamingLogContainer jobId={job.id} />
             </div>
           )}
         </div>
@@ -694,8 +727,11 @@ export function JobDetailPanel() {
       {/* Done state without summary or diff — show edited files + log */}
       {isDone && !hasSummary && !hasDiff && (
         <div className="flex-1 min-h-0 p-3 flex flex-col">
-          <StreamingLog sections={outputSections} entryCount={outputLog.length} />
-          <EditedFilesList files={editedFiles} projectId={job.projectId} />
+          <StreamingLogContainer jobId={job.id} />
+          {persistedEditedFiles
+            ? <EditedFilesList files={persistedEditedFiles} projectId={job.projectId} />
+            : <LiveEditedFilesContainer jobId={job.id} projectId={job.projectId} />
+          }
         </div>
       )}
 
@@ -712,9 +748,12 @@ export function JobDetailPanel() {
           </div>
 
           {planTab === 'plan' && (
-            <div className="flex-1 min-h-0 overflow-y-auto p-3">
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 relative">
               {job.planText ? (
+                <>
+                <CopyButton text={job.planText} className="absolute top-3 right-3 z-10" />
                 <PlanView content={job.planText} />
+                </>
               ) : (
                 <div className="text-sm text-content-tertiary italic">
                   No plan text was captured. Request changes to regenerate it.
@@ -724,7 +763,7 @@ export function JobDetailPanel() {
           )}
           {planTab === 'log' && (
             <div className="flex-1 min-h-0 p-3 flex flex-col">
-              <StreamingLog sections={outputSections} entryCount={outputLog.length} />
+              <StreamingLogContainer jobId={job.id} />
             </div>
           )}
         </div>
@@ -732,9 +771,12 @@ export function JobDetailPanel() {
 
       {!isDone && !isPlanReady && (
         <div className="flex-1 min-h-0 p-3 flex flex-col">
-          <StreamingLog sections={outputSections} entryCount={outputLog.length} />
+          <StreamingLogContainer jobId={job.id} />
         </div>
       )}
+
+      {/* Context window fill — session-level stat above input */}
+      <ContextUsageBar job={job} settings={settings} />
 
       {/* Action area */}
       <ActionArea
@@ -772,7 +814,7 @@ export function JobDetailPanel() {
       />
 
       {/* Phase durations — bottom footer */}
-      <DetailPhaseDurations job={job} now={now} settings={settings} />
+      <DetailPhaseDurations job={job} settings={settings} />
     </div>
   );
 }
@@ -813,7 +855,7 @@ interface ActionAreaProps {
   onCancel: () => void;
 }
 
-function ActionArea({
+const ActionArea = memo(function ActionArea({
   job, responseText, setResponseText, selectedOptions, setSelectedOptions,
   questionAnswers, setQuestionAnswers, questionSelections, setQuestionSelections,
   currentQuestionStep, setCurrentQuestionStep,
@@ -992,13 +1034,12 @@ function ActionArea({
                   {subQs.map((_, i) => (
                     <div
                       key={i}
-                      className={`w-1.5 h-1.5 rounded-full transition-colors ${
-                        i === step
+                      className={`w-1.5 h-1.5 rounded-full transition-colors ${i === step
                           ? 'bg-focus-ring'
                           : i < step
                             ? 'bg-content-tertiary'
                             : 'bg-chrome'
-                      }`}
+                        }`}
                     />
                   ))}
                 </div>
@@ -1097,17 +1138,15 @@ function ActionArea({
                           setResponseText(opt.label);
                         }
                       }}
-                      className={`text-left px-2.5 py-1.5 rounded border transition-colors ${
-                        isSelected
+                      className={`text-left px-2.5 py-1.5 rounded border transition-colors ${isSelected
                           ? 'border-focus-ring bg-focus-ring/10'
                           : 'border-chrome hover:bg-surface-tertiary'
-                      }`}
+                        }`}
                     >
                       <div className="flex items-center gap-2">
                         {isMulti && (
-                          <div className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 ${
-                            isSelected ? 'border-focus-ring bg-focus-ring' : 'border-content-tertiary'
-                          }`}>
+                          <div className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 ${isSelected ? 'border-focus-ring bg-focus-ring' : 'border-content-tertiary'
+                            }`}>
                             {isSelected && (
                               <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                                 <path d="M2 5l2.5 2.5L8 3" />
@@ -1229,7 +1268,7 @@ function ActionArea({
       })()}
     </div>
   );
-}
+});
 
 /* ─── Sub Question Section ─── */
 
@@ -1273,17 +1312,15 @@ function SubQuestionSection({
                       onSelectSingle(opt.label);
                     }
                   }}
-                  className={`text-left px-2.5 py-1.5 rounded border transition-colors ${
-                    isSelected
+                  className={`text-left px-2.5 py-1.5 rounded border transition-colors ${isSelected
                       ? 'border-focus-ring bg-focus-ring/10'
                       : 'border-chrome hover:bg-surface-tertiary'
-                  }`}
+                    }`}
                 >
                   <div className="flex items-center gap-2">
                     {sq.multiSelect && (
-                      <div className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 ${
-                        isSelected ? 'border-focus-ring bg-focus-ring' : 'border-content-tertiary'
-                      }`}>
+                      <div className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 ${isSelected ? 'border-focus-ring bg-focus-ring' : 'border-content-tertiary'
+                        }`}>
                         {isSelected && (
                           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M2 5l2.5 2.5L8 3" />
@@ -1330,20 +1367,19 @@ function SubQuestionSection({
 
 /* ─── Tab Button ─── */
 
-function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+const TabButton = memo(function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
       onClick={onClick}
-      className={`px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider border-b-2 transition-colors ${
-        active
+      className={`px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider border-b-2 transition-colors ${active
           ? 'border-content-primary text-content-primary'
           : 'border-transparent text-content-tertiary hover:text-content-secondary'
-      }`}
+        }`}
     >
       {children}
     </button>
   );
-}
+});
 
 /* ─── Token Formatting ─── */
 
@@ -1353,9 +1389,47 @@ function formatTokenCount(n: number): string {
   return String(n);
 }
 
+/* ─── Context Usage Bar ─── */
+
+const ContextUsageBar = memo(function ContextUsageBar({ job, settings }: { job: Job; settings: AppSettings }) {
+  const ctx = job.contextUsage;
+  if (!ctx || !settings.showContextUsage) return null;
+
+  const pct = Math.min((ctx.used / ctx.limit) * 100, 100);
+  // Threshold colors: calm below 60%, warm 60-85%, hot above 85%
+  const barColor = pct >= 85
+    ? 'bg-semantic-warning'
+    : pct >= 60
+      ? 'bg-content-tertiary'
+      : 'bg-content-tertiary/50';
+
+  return (
+    <div className="shrink-0 px-3 py-1.5">
+      <div className="flex items-center gap-2">
+        <span className="text-[9px] font-medium text-content-tertiary uppercase tracking-wider shrink-0">ctx</span>
+        <div className="flex-1 h-1 rounded-full bg-chrome-subtle/60 overflow-hidden">
+          <div
+            className={`h-full rounded-full ${barColor} transition-all duration-500 ease-out`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        <span
+          className="text-[9px] font-mono text-content-tertiary tabular-nums shrink-0"
+          title={`Context: ${ctx.used.toLocaleString()} / ${ctx.limit.toLocaleString()} tokens (${pct.toFixed(0)}%)`}
+        >
+          {formatTokenCount(ctx.used)}<span className="opacity-40"> / </span>{formatTokenCount(ctx.limit)}
+        </span>
+      </div>
+    </div>
+  );
+});
+
 /* ─── Phase Durations ─── */
 
-function DetailPhaseDurations({ job, now, settings }: { job: Job; now: number; settings: AppSettings }) {
+const DetailPhaseDurations = memo(function DetailPhaseDurations({ job, settings }: { job: Job; settings: AppSettings }) {
+  const isActive = job.status === 'running' || job.status === 'waiting-input';
+  const now = useNow(isActive ? 1000 : 0);
+
   let pausedMs = job.totalPausedMs || 0;
   if ((job.status === 'waiting-input' || job.status === 'plan-ready') && job.waitingStartedAt) {
     pausedMs += now - new Date(job.waitingStartedAt).getTime();
@@ -1431,25 +1505,9 @@ function DetailPhaseDurations({ job, now, settings }: { job: Job; now: number; s
   if (phases.length === 0 && !showBadges) return null;
 
   return (
-    <div className="shrink-0 flex items-center gap-3 px-4 py-1.5 border-t border-chrome-subtle/40 bg-surface-secondary">
-      {phases.map((p) => (
-        <div key={p.label} className="flex items-center gap-1.5">
-          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.dotColor}`} />
-          <span className="text-[10px] font-medium text-content-tertiary uppercase tracking-wider">
-            {p.label}
-          </span>
-          <span className="text-[11px] font-mono text-content-secondary tabular-nums">
-            {p.value}
-          </span>
-          {p.tokens && (
-            <span className="text-[10px] font-mono text-content-tertiary tabular-nums">
-              · {formatTokenCount(p.tokens.inputTokens)}↓ {formatTokenCount(p.tokens.outputTokens)}↑
-            </span>
-          )}
-        </div>
-      ))}
+    <div className="shrink-0 px-4 py-1.5 border-t border-chrome-subtle/40 bg-surface-secondary space-y-1">
       {showBadges && (modelLabel || showThinking) && (
-        <div className="flex items-center gap-2.5 ml-auto min-w-0">
+        <div className="flex items-center gap-2.5 min-w-0">
           {modelLabel && (
             <span className="text-[10px] font-medium text-content-tertiary uppercase tracking-wider truncate" title={`Model: ${modelLabel}`}>
               {modelLabel}
@@ -1468,9 +1526,29 @@ function DetailPhaseDurations({ job, now, settings }: { job: Job; now: number; s
           )}
         </div>
       )}
+      {phases.length > 0 && (
+        <div className="flex items-center gap-3">
+          {phases.map((p) => (
+            <div key={p.label} className="flex items-center gap-1.5">
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.dotColor}`} />
+              <span className="text-[10px] font-medium text-content-tertiary uppercase tracking-wider">
+                {p.label}
+              </span>
+              <span className="text-[11px] font-mono text-content-secondary tabular-nums">
+                {p.value}
+              </span>
+              {p.tokens && (
+                <span className="text-[10px] font-mono text-content-tertiary tabular-nums">
+                  · {formatTokenCount(p.tokens.inputTokens)}↓ {formatTokenCount(p.tokens.outputTokens)}↑
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
-}
+});
 
 /* ─── Plan View ─── */
 
@@ -1483,13 +1561,13 @@ function Spinner({ className = '' }: { className?: string }) {
   );
 }
 
-function PlanView({ content }: { content: string }) {
+const PlanView = memo(function PlanView({ content }: { content: string }) {
   return <PlanMarkdown content={content} />;
-}
+});
 
 /* ─── Prompt Timeline ─── */
 
-function PromptTimeline({
+const PromptTimeline = memo(function PromptTimeline({
   prompt,
   jobTitle,
   followUps,
@@ -1563,7 +1641,7 @@ function PromptTimeline({
       )}
     </div>
   );
-}
+});
 
 /* ─── Edited Files ─── */
 
@@ -1572,7 +1650,7 @@ interface EditedFile {
   tool: string; // 'Write' | 'Edit' | etc.
 }
 
-function EditedFilesList({ files, projectId }: { files: EditedFile[]; projectId: string }) {
+const EditedFilesList = memo(function EditedFilesList({ files, projectId }: { files: EditedFile[]; projectId: string }) {
   if (files.length === 0) return null;
 
   const handleFileClick = (filePath: string) => {
@@ -1629,4 +1707,4 @@ function EditedFilesList({ files, projectId }: { files: EditedFile[]; projectId:
       </div>
     </div>
   );
-}
+});

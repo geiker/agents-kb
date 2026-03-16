@@ -1,8 +1,7 @@
 import { useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { useFileMention } from '../hooks/useFileMention';
-import { useSlashCommand } from '../hooks/useSlashCommand';
+import { useSlashCommand, SlashCommandDropdown } from '../features/skills';
 import { MentionDropdown } from './MentionDropdown';
-import { SlashCommandDropdown } from './SlashCommandDropdown';
 
 /* ─── MentionInput (single-line) ─── */
 

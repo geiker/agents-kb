@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { EventEmitter } from "events";
 import { v4 as uuidv4 } from "uuid";
-import { query } from "./sdk";
+import { query, withProjectScopedClaudeCodeOptions } from "./sdk";
 import type { PermissionResult, CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import type { OutputEntry, PendingQuestion, QuestionOption, SubQuestion, PermissionMode, Skill, JobImage, ThinkingMode } from "../shared/types";
 
@@ -35,6 +35,7 @@ interface PendingToolBlock {
   id?: string;
   input: Record<string, unknown>;
   emittedStart: boolean;
+  parentToolUseId?: string;
 }
 
 /** Context for a pending canUseTool callback waiting for user input */
@@ -59,6 +60,7 @@ export class ClaudeSession extends EventEmitter {
   private _inputTokens = 0;
   private _outputTokens = 0;
   private _currentMsgOutputTokens = 0;
+  private _contextWindow = 0;
 
   // canUseTool resolution
   private pendingInputResolve: ((result: PermissionResult) => void) | null = null;
@@ -70,6 +72,9 @@ export class ClaudeSession extends EventEmitter {
   // Delta computation state for partial messages
   private prevContentSnapshot: ContentBlockSnapshot[] = [];
   private pendingToolBlocks = new Map<number, PendingToolBlock>();
+
+  // Sub-agent tracking: parent_tool_use_id from the current SDK message
+  private currentParentToolUseId: string | null = null;
 
   // File checkpointing: track user message UUIDs for rewindFiles()
   private userMessageUuids: string[] = [];
@@ -127,7 +132,7 @@ export class ClaudeSession extends EventEmitter {
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const sdkOptions: Record<string, any> = {
+    const sdkOptions: Record<string, any> = withProjectScopedClaudeCodeOptions({
       cwd: this.options.projectPath,
       permissionMode: sdkPermissionMode,
       includePartialMessages: true,
@@ -136,7 +141,7 @@ export class ClaudeSession extends EventEmitter {
       settingSources: ["user", "project"],
       // Enable file checkpointing in dev phase for rewindFiles() support
       enableFileCheckpointing: this.options.phase === "dev",
-    };
+    });
 
     if (allowedTools.length > 0) {
       sdkOptions.allowedTools = allowedTools;
@@ -491,10 +496,11 @@ export class ClaudeSession extends EventEmitter {
     }
   }
 
-  get tokenUsage(): { inputTokens: number; outputTokens: number } {
+  get tokenUsage(): { inputTokens: number; outputTokens: number; contextWindow: number } {
     return {
       inputTokens: this._inputTokens,
       outputTokens: this._outputTokens + this._currentMsgOutputTokens,
+      contextWindow: this._contextWindow,
     };
   }
 
@@ -545,6 +551,9 @@ export class ClaudeSession extends EventEmitter {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private handleSDKMessage(msg: any): void {
+    // Track sub-agent context from SDK messages
+    this.currentParentToolUseId = (msg.parent_tool_use_id as string) || null;
+
     const type = msg.type as string;
 
     switch (type) {
@@ -728,6 +737,7 @@ export class ClaudeSession extends EventEmitter {
             timestamp: now,
             type: "text",
             content: delta,
+            parentToolUseId: this.currentParentToolUseId || undefined,
           } satisfies OutputEntry);
         }
         this.prevContentSnapshot[i] = { type: "text", textLength: text.length };
@@ -740,6 +750,7 @@ export class ClaudeSession extends EventEmitter {
             timestamp: now,
             type: "thinking",
             content: delta,
+            parentToolUseId: this.currentParentToolUseId || undefined,
           } satisfies OutputEntry);
         }
         this.prevContentSnapshot[i] = { type: "thinking", textLength: thinking.length };
@@ -753,6 +764,8 @@ export class ClaudeSession extends EventEmitter {
               type: "tool-use",
               content: "",
               toolName: name,
+              toolUseId: block.id as string | undefined,
+              parentToolUseId: this.currentParentToolUseId || undefined,
             } satisfies OutputEntry);
           }
           this.pendingToolBlocks.set(i, {
@@ -760,6 +773,7 @@ export class ClaudeSession extends EventEmitter {
             id: block.id as string | undefined,
             input: (block.input as Record<string, unknown>) || {},
             emittedStart: true,
+            parentToolUseId: this.currentParentToolUseId || undefined,
           });
         } else {
           // Update pending tool input with latest partial
@@ -782,7 +796,7 @@ export class ClaudeSession extends EventEmitter {
     if (!pending) return;
     this.pendingToolBlocks.delete(index);
 
-    const { name, input } = pending;
+    const { name, input, parentToolUseId } = pending;
 
     // Emit tool input (if not internal tool)
     if (!ClaudeSession.INTERNAL_TOOLS.has(name)) {
@@ -792,6 +806,8 @@ export class ClaudeSession extends EventEmitter {
           timestamp: new Date().toISOString(),
           type: "tool-use",
           content: inputStr,
+          toolUseId: pending.id,
+          parentToolUseId,
         } satisfies OutputEntry);
       }
     }
@@ -891,6 +907,7 @@ export class ClaudeSession extends EventEmitter {
               timestamp: new Date().toISOString(),
               type: "tool-result",
               content: text,
+              parentToolUseId: this.currentParentToolUseId || undefined,
             } satisfies OutputEntry);
           }
         }
@@ -927,6 +944,20 @@ export class ClaudeSession extends EventEmitter {
       this._inputTokens = inputTotal;
       this._outputTokens = resultUsage.output_tokens || 0;
       this._currentMsgOutputTokens = 0;
+    }
+
+    // Extract context window size from modelUsage (max across all models used)
+    // SDK types use camelCase but JSON stream may use snake_case — check both
+    const modelUsage = (msg.modelUsage || msg.model_usage) as
+      | Record<string, { contextWindow?: number; context_window?: number }>
+      | undefined;
+    if (modelUsage) {
+      let maxCtx = 0;
+      for (const mu of Object.values(modelUsage)) {
+        const ctx = mu.contextWindow || mu.context_window || 0;
+        if (ctx > maxCtx) maxCtx = ctx;
+      }
+      if (maxCtx > 0) this._contextWindow = maxCtx;
     }
 
     // Emit cost and stats for external tracking
@@ -998,6 +1029,7 @@ export class ClaudeSession extends EventEmitter {
       timestamp: new Date().toISOString(),
       type: "rate-limit",
       content: parts.join(" "),
+      parentToolUseId: this.currentParentToolUseId || undefined,
     } satisfies OutputEntry);
   }
 
@@ -1017,6 +1049,7 @@ export class ClaudeSession extends EventEmitter {
         type: "progress",
         content: parts.join(" "),
         toolName: toolName || undefined,
+        parentToolUseId: this.currentParentToolUseId || undefined,
       } satisfies OutputEntry);
     }
   }
@@ -1025,13 +1058,34 @@ export class ClaudeSession extends EventEmitter {
   private handleToolUseSummary(msg: any): void {
     const summary = (msg.summary as string) || (msg.message as string) || "";
     const toolName = (msg.tool_name as string) || (msg.name as string) || "";
-    if (summary) {
+    if (!summary) return;
+
+    // Sub-agent tool summaries: emit as tool-use sections so they render as
+    // proper tool cards inside the nested Agent view
+    if (this.currentParentToolUseId && toolName) {
+      // Emit a complete (non-streaming) tool section with the summary as content
       this.emit("output", {
         timestamp: new Date().toISOString(),
-        type: "system",
-        content: toolName ? `[${toolName}] ${summary}` : summary,
+        type: "tool-use",
+        content: "",
+        toolName,
+        parentToolUseId: this.currentParentToolUseId,
       } satisfies OutputEntry);
+      this.emit("output", {
+        timestamp: new Date().toISOString(),
+        type: "tool-result",
+        content: summary,
+        parentToolUseId: this.currentParentToolUseId,
+      } satisfies OutputEntry);
+      return;
     }
+
+    this.emit("output", {
+      timestamp: new Date().toISOString(),
+      type: "system",
+      content: toolName ? `[${toolName}] ${summary}` : summary,
+      parentToolUseId: this.currentParentToolUseId || undefined,
+    } satisfies OutputEntry);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

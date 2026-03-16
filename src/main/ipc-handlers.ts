@@ -1,5 +1,5 @@
 import { app, ipcMain, dialog, BrowserWindow, nativeTheme, shell } from 'electron';
-import { query as sdkQuery, fetchSupportedModels } from './sdk';
+import { query as sdkQuery, fetchSupportedModels, withProjectScopedClaudeCodeOptions } from './sdk';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
@@ -27,7 +27,7 @@ import { notifyInputNeeded, notifyJobComplete, notifyJobError, notifyPlanReady }
 import { checkCliHealth, spawnLogin, fetchAccountInfo } from './cli-health';
 import { isDemoMode, getDemoProjects, getDemoJobs, getDemoSettings, getDemoBranchStatuses } from './demo-loader';
 import { isGitRepoRoot, listBranches, checkoutBranch, gitStageAll, gitCommit, getBranchesStatus, gitPush } from './git-snapshot';
-import { listSkills } from './skills';
+import { setSkillsCache, registerSkillsIpc } from './skills/index';
 import { listProjectFiles } from './file-list';
 import type { Job, JobImage, JobDetailDrafts, JobComposerDraft, PendingQuestionDraft, OutputEntry, RawMessage, PendingQuestion, AppSettings, Project, ModelChoice, EffortLevel, PromptConfig, PermissionMode, DynamicModelInfo, ModelOption, Skill, AccountInfo, ThinkingMode } from '../shared/types';
 import { DEFAULT_PROMPT_CONFIGS, normalizeEffortForThinking } from '../shared/types';
@@ -99,9 +99,6 @@ const stepHistoryTracker = new JobStepHistoryTracker();
 
 // --- Dynamic model catalog from SDK ---
 let cachedDynamicModels: DynamicModelInfo[] | null = null;
-
-// --- SDK skills cache (keyed by project path) ---
-const sdkSkillsCache = new Map<string, Skill[]>();
 
 // --- Account info from SDK ---
 let cachedAccountInfo: AccountInfo | null = null;
@@ -373,6 +370,7 @@ class BatchedSender {
   private rawMessageBatches = new Map<string, RawMessage[]>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private getWindow: WindowGetter;
+  private flushCallbacks: Array<(jobId: string, entries: OutputEntry[], messages: RawMessage[]) => void> = [];
 
   constructor(getWindow: WindowGetter) {
     this.getWindow = getWindow;
@@ -380,7 +378,7 @@ class BatchedSender {
 
   start(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => this.flush(), 50);
+    this.timer = setInterval(() => this.flush(), 100);
   }
 
   stop(): void {
@@ -397,6 +395,25 @@ class BatchedSender {
       batch = [];
       this.outputBatches.set(jobId, batch);
     }
+
+    if (batch.length > 0) {
+      const last = batch[batch.length - 1];
+      const sameParent = entry.parentToolUseId === last.parentToolUseId;
+      if (
+        sameParent &&
+        ((entry.type === 'text' && last.type === 'text') ||
+        (entry.type === 'thinking' && last.type === 'thinking'))
+      ) {
+        last.content += entry.content;
+        last.timestamp = entry.timestamp;
+        return;
+      }
+      if (sameParent && entry.type === 'tool-use' && last.type === 'tool-use' && !entry.toolName) {
+        last.content += entry.content;
+        last.timestamp = entry.timestamp;
+        return;
+      }
+    }
     batch.push(entry);
   }
 
@@ -409,19 +426,37 @@ class BatchedSender {
     batch.push(raw);
   }
 
+  onFlush(cb: (jobId: string, entries: OutputEntry[], messages: RawMessage[]) => void): () => void {
+    this.flushCallbacks.push(cb);
+    return () => {
+      const idx = this.flushCallbacks.indexOf(cb);
+      if (idx >= 0) this.flushCallbacks.splice(idx, 1);
+    };
+  }
+
   private flush(): void {
-    for (const [jobId, entries] of this.outputBatches) {
-      if (entries.length > 0) {
-        sendToRenderer(this.getWindow, 'job:output-batch', { jobId, entries });
+    // Collect all job IDs from both maps
+    const jobIds = new Set<string>([
+      ...this.outputBatches.keys(),
+      ...this.rawMessageBatches.keys(),
+    ]);
+
+    for (const jobId of jobIds) {
+      const entries = this.outputBatches.get(jobId);
+      const messages = this.rawMessageBatches.get(jobId);
+      if (entries?.length || messages?.length) {
+        // Fire persistence callbacks before sending IPC
+        for (const cb of this.flushCallbacks) {
+          cb(jobId, entries || [], messages || []);
+        }
+        sendToRenderer(this.getWindow, 'job:streaming-batch', {
+          jobId,
+          entries: entries || [],
+          messages: messages || [],
+        });
       }
     }
     this.outputBatches.clear();
-
-    for (const [jobId, messages] of this.rawMessageBatches) {
-      if (messages.length > 0) {
-        sendToRenderer(this.getWindow, 'job:raw-message-batch', { jobId, messages });
-      }
-    }
     this.rawMessageBatches.clear();
   }
 }
@@ -508,13 +543,18 @@ async function startClaudeSession(
   });
 
   session.on('raw-message', (raw: RawMessage) => {
-    appendRawMessage(job.id, raw);
     batchedSender.pushRawMessage(job.id, raw);
   });
 
   session.on('output', (entry: OutputEntry) => {
-    appendOutput(job.id, entry);
     batchedSender.pushOutput(job.id, entry);
+  });
+
+  // Defer persistence to the batch flush cycle — aligns disk writes with IPC interval
+  const unsubFlush = batchedSender.onFlush((flushedJobId, entries, messages) => {
+    if (flushedJobId !== job.id) return;
+    for (const entry of entries) appendOutput(job.id, entry);
+    for (const raw of messages) appendRawMessage(job.id, raw);
   });
 
   // Capture file "before" state from canUseTool (pre-tool-call) — fires BEFORE
@@ -540,7 +580,7 @@ async function startClaudeSession(
 
   session.on('skills', (skills: Skill[]) => {
     if (skills.length > 0) {
-      sdkSkillsCache.set(project.path, skills);
+      setSkillsCache(project.path, skills);
     }
   });
 
@@ -601,6 +641,7 @@ async function startClaudeSession(
   });
 
   session.on('close', async (code: number) => {
+    unsubFlush();
     const current = getJob(job.id);
     if (!current) return;
 
@@ -616,7 +657,12 @@ async function startClaudeSession(
     const mergedTokens = {
       inputTokens: existing.inputTokens + tokens.inputTokens,
       outputTokens: existing.outputTokens + tokens.outputTokens,
+      ...(tokens.contextWindow > 0 ? { contextWindow: tokens.contextWindow } : {}),
     };
+    // Session-level context snapshot: latest peak input vs context window (not accumulated)
+    const contextUsage = tokens.contextWindow > 0 && tokens.inputTokens > 0
+      ? { used: tokens.inputTokens, limit: tokens.contextWindow }
+      : current.contextUsage;
 
     if (code !== 0 || current.status === 'error') {
       stepHistoryTracker.discardStep(job.id);
@@ -626,6 +672,7 @@ async function startClaudeSession(
           error: `Claude process exited with code ${code}`,
           erroredAt: new Date().toISOString(),
           [tokenField]: mergedTokens,
+          contextUsage,
         });
         if (updated) {
           sendToRenderer(getWindow, 'job:status-changed', updated);
@@ -656,6 +703,7 @@ async function startClaudeSession(
         editedFiles: editedFiles.length > 0 ? editedFiles : undefined,
         stepSnapshots: nextStepSnapshots,
         [tokenField]: mergedTokens,
+        contextUsage,
       });
       if (updated) {
         sendToRenderer(getWindow, 'job:status-changed', updated);
@@ -666,16 +714,16 @@ async function startClaudeSession(
       if (planReadyPromise) {
         // plan-complete already triggered markPlanReady — await it, then persist tokens
         await planReadyPromise;
-        const updated = updateJob(job.id, { [tokenField]: mergedTokens });
+        const updated = updateJob(job.id, { [tokenField]: mergedTokens, contextUsage });
         if (updated) {
           sendToRenderer(getWindow, 'job:status-changed', updated);
         }
       } else if (current.column === 'planning' && current.status === 'running') {
         // plan-complete hasn't fired yet — mark ready now with tokens
-        await markPlanReady(job.id, getWindow, { [tokenField]: mergedTokens });
+        await markPlanReady(job.id, getWindow, { [tokenField]: mergedTokens, contextUsage });
       } else {
         // Already handled (e.g. status changed externally) — persist tokens only
-        const updated = updateJob(job.id, { [tokenField]: mergedTokens });
+        const updated = updateJob(job.id, { [tokenField]: mergedTokens, contextUsage });
         if (updated) {
           sendToRenderer(getWindow, 'job:status-changed', updated);
         }
@@ -684,6 +732,7 @@ async function startClaudeSession(
   });
 
   session.on('error', (errorMsg: string) => {
+    unsubFlush();
     stepHistoryTracker.discardStep(job.id);
     const updated = updateJob(job.id, {
       status: 'error',
@@ -724,13 +773,13 @@ async function runClaudeStructured<T>(
   delete env.CLAUDECODE;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const sdkOptions: Record<string, any> = {
+  const sdkOptions: Record<string, any> = withProjectScopedClaudeCodeOptions({
     cwd: projectPath,
     env,
     permissionMode: 'plan',
     settingSources: ['user', 'project'],
     outputFormat: { type: 'json_schema', schema },
-  };
+  });
 
 
   sdkOptions.model = options?.model || 'haiku';
@@ -793,13 +842,13 @@ async function runClaudeEditTask(
   const bypassPermissions = (options?.permissionMode ?? 'bypassPermissions') === 'bypassPermissions';
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const sdkOptions: Record<string, any> = {
+  const sdkOptions: Record<string, any> = withProjectScopedClaudeCodeOptions({
     cwd: projectPath,
     env,
     permissionMode: bypassPermissions ? 'bypassPermissions' : 'default',
     allowDangerouslySkipPermissions: bypassPermissions,
     settingSources: ['user', 'project'],
-  };
+  });
 
 
   if (options?.model) {
@@ -836,14 +885,14 @@ async function rewindViaResume(
   delete env.CLAUDECODE;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const sdkOptions: Record<string, any> = {
+  const sdkOptions: Record<string, any> = withProjectScopedClaudeCodeOptions({
     cwd: projectPath,
     permissionMode: 'plan',
     enableFileCheckpointing: true,
     resume: sessionId,
     env,
     settingSources: ['user', 'project'],
-  };
+  });
 
 
   let q;
@@ -1940,17 +1989,7 @@ export function registerIpcHandlers(getWindow: WindowGetter): void {
   });
 
   // === Skills ===
-  ipcMain.handle('skills:list', (_event, projectId?: string) => {
-    const project = projectId ? getProjects().find(p => p.id === projectId) : undefined;
-
-    // Use SDK-provided skills when available (more consistent with the running session)
-    if (project?.path && sdkSkillsCache.has(project.path)) {
-      return sdkSkillsCache.get(project.path)!;
-    }
-
-    // Fallback to filesystem scan
-    return listSkills(project?.path);
-  });
+  registerSkillsIpc();
 
   // === Account Info ===
   // Eagerly fetch at startup

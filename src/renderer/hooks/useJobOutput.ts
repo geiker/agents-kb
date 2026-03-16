@@ -6,12 +6,19 @@ const EMPTY_OUTPUT: OutputEntry[] = [];
 const EMPTY_RAW: RawMessage[] = [];
 
 export interface OutputSection {
+  id: number;
   kind: 'text' | 'thinking' | 'tool' | 'system' | 'error' | 'plan' | 'rate-limit' | 'progress';
   content: string;
   toolName?: string;
   toolResult?: string;
   isStreaming?: boolean;
   timestamp: string;
+  /** SDK tool_use block ID (set on Agent tool sections for child matching) */
+  toolUseId?: string;
+  /** Nested sub-agent sections rendered inside this Agent tool */
+  children?: OutputSection[];
+  /** Whether any child section is currently streaming */
+  hasStreamingChild?: boolean;
 }
 
 export interface EditedFile {
@@ -25,10 +32,15 @@ interface OutputAnalysisState {
   rawSections: OutputSection[];
   processedSections: OutputSection[];
   processedIndexByRawIndex: number[];
+  nextSectionId: number;
   currentTool: string;
   toolBuffer: string;
   seenEditedFiles: Map<string, string>;
   editedFiles: EditedFile[];
+  /** Map from Agent toolUseId → raw section index */
+  agentSectionByToolUseId: Map<string, number>;
+  /** Separate analysis state per sub-agent (keyed by parentToolUseId) */
+  childStates: Map<string, OutputAnalysisState>;
 }
 
 const FILE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
@@ -83,7 +95,8 @@ function finalizeSection(section: OutputSection): OutputSection | null {
     return null;
   }
 
-  if (section.kind === 'tool' && !section.content.trim() && !section.toolResult?.trim()) {
+  if (section.kind === 'tool' && !section.content.trim() && !section.toolResult?.trim()
+    && !(section.children && section.children.length > 0)) {
     return null;
   }
 
@@ -97,10 +110,13 @@ function createOutputAnalysisState(): OutputAnalysisState {
     rawSections: [],
     processedSections: [],
     processedIndexByRawIndex: [],
+    nextSectionId: 0,
     currentTool: '',
     toolBuffer: '',
     seenEditedFiles: new Map<string, string>(),
     editedFiles: [],
+    agentSectionByToolUseId: new Map(),
+    childStates: new Map(),
   };
 }
 
@@ -130,8 +146,9 @@ function syncSection(state: OutputAnalysisState, rawIndex: number): void {
   state.processedIndexByRawIndex[rawIndex] = state.processedSections.length - 1;
 }
 
-function appendRawSection(state: OutputAnalysisState, section: OutputSection): void {
-  state.rawSections.push(section);
+function appendRawSection(state: OutputAnalysisState, section: Omit<OutputSection, 'id'>): void {
+  const full: OutputSection = { ...section, id: state.nextSectionId++ };
+  state.rawSections.push(full);
   state.processedIndexByRawIndex.push(-1);
   syncSection(state, state.rawSections.length - 1);
 }
@@ -185,7 +202,46 @@ function appendEditedFileEntry(state: OutputAnalysisState, entry: OutputEntry): 
   flushEditedFileTool(state);
 }
 
+/**
+ * Route an entry to the appropriate child state if it has a parentToolUseId,
+ * then update the parent Agent section's children and streaming status.
+ * Returns true if the entry was handled as a child (should not be added to top-level).
+ */
+function routeToChildState(state: OutputAnalysisState, entry: OutputEntry): boolean {
+  const parentId = entry.parentToolUseId;
+  if (!parentId) return false;
+
+  const parentRawIndex = state.agentSectionByToolUseId.get(parentId);
+  if (parentRawIndex === undefined) return false;
+
+  // Get or create child state for this sub-agent
+  let childState = state.childStates.get(parentId);
+  if (!childState) {
+    childState = createOutputAnalysisState();
+    state.childStates.set(parentId, childState);
+  }
+
+  // Process the entry through the child pipeline (reuses same logic)
+  appendSectionEntry(childState, entry);
+  appendEditedFileEntry(childState, entry);
+
+  // Update the parent Agent section with child data
+  const parentSection = state.rawSections[parentRawIndex];
+  if (parentSection) {
+    parentSection.children = childState.processedSections;
+    parentSection.hasStreamingChild = childState.processedSections.some((s) => s.isStreaming);
+    syncSection(state, parentRawIndex);
+  }
+
+  return true;
+}
+
 function appendSectionEntry(state: OutputAnalysisState, entry: OutputEntry): void {
+  // Route sub-agent entries to their parent Agent section
+  if (entry.parentToolUseId && routeToChildState(state, entry)) {
+    return;
+  }
+
   finalizeStreamingTool(state, entry.type);
 
   const last = state.rawSections[state.rawSections.length - 1];
@@ -197,7 +253,14 @@ function appendSectionEntry(state: OutputAnalysisState, entry: OutputEntry): voi
 
   if (entry.type === 'tool-use') {
     if (entry.toolName && entry.content === '') {
-      appendRawSection(state, { kind: 'tool', content: '', toolName: entry.toolName, isStreaming: true, timestamp: entry.timestamp });
+      appendRawSection(state, {
+        kind: 'tool', content: '', toolName: entry.toolName, isStreaming: true, timestamp: entry.timestamp,
+        toolUseId: entry.toolUseId,
+      });
+      // Register Agent tool sections for child routing
+      if (entry.toolUseId && (entry.toolName === 'Agent' || entry.toolName === 'Task')) {
+        state.agentSectionByToolUseId.set(entry.toolUseId, state.rawSections.length - 1);
+      }
       return;
     }
     if (last?.kind === 'tool' && !entry.toolName) {
@@ -213,12 +276,26 @@ function appendSectionEntry(state: OutputAnalysisState, entry: OutputEntry): voi
       return;
     }
     if (entry.toolName && entry.content) {
-      appendRawSection(state, { kind: 'tool', content: entry.content, toolName: entry.toolName, isStreaming: true, timestamp: entry.timestamp });
+      appendRawSection(state, {
+        kind: 'tool', content: entry.content, toolName: entry.toolName, isStreaming: true, timestamp: entry.timestamp,
+        toolUseId: entry.toolUseId,
+      });
+      // Register Agent tool sections for child routing
+      if (entry.toolUseId && (entry.toolName === 'Agent' || entry.toolName === 'Task')) {
+        state.agentSectionByToolUseId.set(entry.toolUseId, state.rawSections.length - 1);
+      }
       return;
     }
     if (last?.kind === 'tool') {
       last.content += entry.content;
       last.isStreaming = true;
+      // Capture toolUseId from finalized input if not set yet
+      if (entry.toolUseId && !last.toolUseId) {
+        last.toolUseId = entry.toolUseId;
+        if (last.toolName === 'Agent' || last.toolName === 'Task') {
+          state.agentSectionByToolUseId.set(entry.toolUseId, state.rawSections.length - 1);
+        }
+      }
       syncLastSection(state);
       return;
     }
@@ -284,7 +361,10 @@ function processEntries(state: OutputAnalysisState, entries: OutputEntry[], star
   for (let i = startIndex; i < entries.length; i += 1) {
     const entry = entries[i];
     appendSectionEntry(state, entry);
-    appendEditedFileEntry(state, entry);
+    // Only track edited files for top-level entries (children handle their own)
+    if (!entry.parentToolUseId) {
+      appendEditedFileEntry(state, entry);
+    }
   }
   state.processedLength = entries.length;
   state.lastProcessedEntry = entries[entries.length - 1];
@@ -301,6 +381,9 @@ export function useJobOutputAnalysis(jobId: string, entries: OutputEntry[]): {
   editedFiles: EditedFile[];
 } {
   const cacheRef = useRef<{ jobId: string; entries: OutputEntry[]; state: OutputAnalysisState } | null>(null);
+  const resultRef = useRef<{ sections: OutputSection[]; editedFiles: EditedFile[] }>(
+    { sections: [], editedFiles: [] }
+  );
 
   return useMemo(() => {
     const cached = cacheRef.current;
@@ -317,6 +400,13 @@ export function useJobOutputAnalysis(jobId: string, entries: OutputEntry[]): {
     }
 
     cacheRef.current = { jobId, entries, state };
-    return { sections: state.processedSections, editedFiles: state.editedFiles };
+
+    const prev = resultRef.current;
+    if (prev.sections === state.processedSections && prev.editedFiles === state.editedFiles) {
+      return prev;
+    }
+    const next = { sections: state.processedSections, editedFiles: state.editedFiles };
+    resultRef.current = next;
+    return next;
   }, [entries, jobId]);
 }

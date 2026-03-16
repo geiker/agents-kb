@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { useElectronAPI } from '../hooks/useElectronAPI';
-import { useKanbanStore } from '../hooks/useKanbanStore';
-import { LightbulbIcon, XIcon } from './Icons';
-import type { Skill } from '../types/index';
+import { useElectronAPI } from '../../hooks/useElectronAPI';
+import { useKanbanStore } from '../../hooks/useKanbanStore';
+import { LightbulbIcon, XIcon } from '../../components/Icons';
+import type { Skill } from '../../types/index';
 
 export function SkillsPanel({ onClose }: { onClose: () => void }) {
   const api = useElectronAPI();

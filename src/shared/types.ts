@@ -235,6 +235,7 @@ export interface AppSettings {
   defaultEffort?: EffortLevel;
   alwaysShowModelEffort: boolean;
   showTokenUsage: boolean;
+  showContextUsage: boolean;
   showModelEffortInNewJob: boolean;
   preferredEditor: PreferredEditor;
   notificationsEnabled: boolean;
@@ -276,6 +277,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultEffort: "medium",
   alwaysShowModelEffort: false,
   showTokenUsage: false,
+  showContextUsage: false,
   showModelEffortInNewJob: false,
   preferredEditor: "auto",
   notificationsEnabled: true,
@@ -298,6 +300,15 @@ export interface RewindFilesResult {
 export interface PhaseTokenUsage {
   inputTokens: number;
   outputTokens: number;
+  contextWindow?: number;
+}
+
+/** Session-level context window snapshot (latest values, not accumulated). */
+export interface ContextUsage {
+  /** Peak input tokens from the latest session run (≈ actual context fill). */
+  used: number;
+  /** Model context window limit. */
+  limit: number;
 }
 
 /* ─── Skills ─── */
@@ -380,6 +391,10 @@ export interface OutputEntry {
   toolName?: string;
   /** Follow-up prompt suggestions from the SDK */
   suggestions?: string[];
+  /** SDK block ID for this tool_use (used to match sub-agent children) */
+  toolUseId?: string;
+  /** Parent Agent tool_use block ID — set on entries originating inside a sub-agent */
+  parentToolUseId?: string;
 }
 
 export interface QuestionOption {
@@ -487,6 +502,7 @@ export interface Job {
   developmentElapsedMs?: number;
   planningTokens?: PhaseTokenUsage;
   developmentTokens?: PhaseTokenUsage;
+  contextUsage?: ContextUsage;
   userMessageUuids?: string[];
   stepSnapshots?: JobStepSnapshot[];
   diffText?: string;

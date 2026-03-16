@@ -1,9 +1,17 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import type { Skill } from '../shared/types';
+import { ipcMain } from 'electron';
+import type { Skill } from '../../shared/types';
 
 const SKILL_FILENAME = 'SKILL.md';
+
+// In-memory cache of skills reported by running sessions (keyed by project path)
+const skillsCache = new Map<string, Skill[]>();
+
+export function setSkillsCache(projectPath: string, skills: Skill[]): void {
+  skillsCache.set(projectPath, skills);
+}
 
 function parseFrontmatter(content: string): Record<string, string> {
   const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
@@ -65,6 +73,13 @@ export function listSkills(projectPath?: string): Skill[] {
     projectSkills = readSkillsFromDir(projectDir, 'project');
   }
 
-  // Project skills first, then global
-  return [...projectSkills, ...globalSkills];
+  // Merge: SDK-cached skills first, then filesystem (project, global)
+  const cached = projectPath ? skillsCache.get(projectPath) ?? [] : [];
+  return [...cached, ...projectSkills, ...globalSkills];
+}
+
+export function registerSkillsIpc(): void {
+  ipcMain.handle('skills:list', (_event, projectId?: string) => {
+    return listSkills(projectId);
+  });
 }
