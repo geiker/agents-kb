@@ -27,11 +27,13 @@ jobs:
         run: pnpm build
 
       - name: Package Windows installer
-        run: pnpm exec electron-builder --win --dir
+        run: pnpm exec electron-builder --win
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-build
-          path: release/win-unpacked/
+          name: windows-installer
+          path: |
+            release/*.exe
+            release/*.zip
           retention-days: 1
